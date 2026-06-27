@@ -1,0 +1,35 @@
+#ifndef NTEL_SHARED_RING_H
+#define NTEL_SHARED_RING_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+/**
+ * @brief NtelSharedRingHeader
+ * Enforces 64-byte alignment and VA-invariance as per EVP Section 2.
+ * Indices are stored as raw byte-based offsets from the header, 
+ * not absolute pointers, to allow mapping at different Virtual Addresses.
+ */
+struct NtelSharedRingHeader {
+    uint32_t writeIdx;      // Atomic producer offset (byte-based)
+    uint32_t readIdx;       // Consumer offset (byte-based)
+    uint32_t capacityDW;    // Total ring capacity in Double Words
+    uint32_t reserved[13];  // Padding for 64-byte alignment
+};
+
+#define NTEL_RING_ALIGNMENT 64
+#define NTEL_RING_MAX_CAPACITY (8 * 1024 * 1024) // 8MB as per EVP
+
+typedef struct {
+    struct NtelSharedRingHeader *header;
+    uint8_t *buffer_base;
+    uint32_t capacity_bytes;
+} NtelRingContext;
+
+// Core API
+bool ntel_ring_init(NtelRingContext *ctx, void *shared_mem, uint32_t size);
+bool ntel_ring_try_write(NtelRingContext *ctx, const uint8_t *data, uint32_t len);
+bool ntel_ring_try_read(NtelRingContext *ctx, uint8_t *out_data, uint32_t max_len, uint32_t *bytes_read);
+void ntel_ring_cleanup(NtelRingContext *ctx);
+
+#endif // NTEL_SHARED_RING_H

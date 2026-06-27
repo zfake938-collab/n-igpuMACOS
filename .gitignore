@@ -1,0 +1,21 @@
+# macOS files
+.DS_Store
+
+# Xcode project files
+*.xcodeproj/project.xcworkspace
+*.xcodeproj/xcuserdata
+
+# Build artifacts
+build/
+DerivedData/
+
+# Simulation executable
+sim_test
+
+# Compiled objects and libraries
+*.o
+*.a
+*.so
+
+# Firmware blobs (should be sourced by the user)
+firmware/bin/

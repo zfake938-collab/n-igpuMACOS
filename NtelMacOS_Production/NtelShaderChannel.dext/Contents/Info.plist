@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>NtelShaderChannel</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ntel.driver.NtelShaderChannel</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>NtelShaderChannel</string>
+    <key>CFBundlePackageType</key>
+    <string>DEXT</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+    <key>IOKitPersonalities</key>
+    <dict>
+        <key>NtelShaderChannel_RingManager</key>
+        <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.ntel.driver.NtelShaderChannel</string>
+            <key>IOClass</key>
+            <string>IOUserService</string>
+            <key>IOMatchCategory</key>
+            <string>NtelShaderChannel</string>
+            <key>IOProviderClass</key>
+            <string>IOPCIDevice</string>
+            <key>IOPCIMatch</key>
+            <string>0x46A88086</string>
+            <key>IOUserServerName</key>
+            <string>com.ntel.driver.NtelShaderChannel</string>
+        </dict>
+    </dict>
+    <key>OSBundleUsageDescription</key>
+    <string>Translates Metal AIR to Gen12 Xe Execution Unit Bytecode.</string>
+    <key>com.apple.developer.driverkit</key>
+    <true/>
+    <key>com.apple.developer.driverkit.transport.pci</key>
+    <array>
+        <dict>
+            <key>IOPCIMatch</key>
+            <string>0x46A88086</string>
+        </dict>
+    </array>
+</dict>
+</plist>
