@@ -92,10 +92,10 @@ void test_asynchronous_watchdog(NtelSimulationEnvironment *env) {
 // --- TEST 4: Ring Wraparound ---
 void test_ring_wraparound(NtelSimulationEnvironment *env) {
     printf("Running Test 4: Ring Buffer Wraparound...\n");
-    // Move read/write indices near the edge
+    // Reset ring to be empty and positioned near the edge
     uint32_t cap = env->ring->capacity_bytes;
     env->ring->header->writeIdx = cap - 4;
-    env->ring->header->readIdx = cap - 10;
+    env->ring->header->readIdx = cap - 4;
 
     uint32_t payload[] = {0xDEADBEEF, 0xCAFEBABE};
     // This write will wrap around the end of the buffer
@@ -115,11 +115,12 @@ void test_ring_wraparound(NtelSimulationEnvironment *env) {
 // --- TEST 5: Monkey Brain Fuzzer ---
 void test_monkey_brain_fuzzer(NtelSimulationEnvironment *env) {
     printf("Running Test 5: Monkey Brain Fuzzer (Security Guardrails)...\n");
-    // Simulate a corrupt packet header (size = 0xFFFF)
+    // Simulate a corrupt packet header (size > ring capacity)
     uint8_t corrupt_packet[4] = {0xFF, 0xFF, 0xFF, 0xFF}; 
     
-    // Attempt to write a payload that is too large
-    bool res = ntel_ring_try_write(env->ring, corrupt_packet, 0xFFFF);
+    // Attempt to write a payload that is larger than the ring capacity
+    // This should trigger the 'len > ctx->capacity_bytes' guardrail in ntel_ring_try_write
+    bool res = ntel_ring_try_write(env->ring, corrupt_packet, env->ring->capacity_bytes + 1);
     if (!res) {
         printf("  [PASS] Fuzzer payload rejected by capacity guardrails.\n");
     } else {

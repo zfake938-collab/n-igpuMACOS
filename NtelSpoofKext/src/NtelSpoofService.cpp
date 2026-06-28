@@ -2,14 +2,14 @@
 #include <IOKit/pci/IOPCIDevice.h>
 #include <libkern/OSByteOrder.h>
 
-// Intel UHD 770 (Alder Lake)
+// Intel UHD 770 (Alder Lake) — 1235U iGPU device ID is 0x46A8
 #define INTEL_UHD770_VENDOR_ID 0x8086
-#define INTEL_UHD770_DEVICE_ID 0x4680
+#define INTEL_UHD770_DEVICE_ID 0x46A8
 
 // Spoofed AMD Radeon (Targeting a mobile Polaris-based chip for AMDRadeonX4000 compatibility)
 // Example: AMD Radeon RX 550 / Vega Mobile target
 #define SPOOFED_AMD_VENDOR_ID 0x1002
-#define SPOOFED_AMD_DEVICE_ID 0x6651 
+#define SPOOFED_AMD_DEVICE_ID 0x7340 
 
 class NtelSpoofService : public IOService {
     OSDeclareDefaultStructors(NtelSpoofService)
@@ -47,7 +47,7 @@ bool NtelSpoofService::start(IOService *provider) {
         // Also spoof the class code to match AMD Graphics
         pciDevice->setProperty("class-code", (OSNumber *)OSNumber::withNumber(0x03000000, 32));
 
-        IOLog("NtelSpoofKext: Successfully intercepted Intel 0x4680 and spoofed to AMD 0x%x\n", SPOOFED_AMD_DEVICE_ID);
+        IOLog("NtelSpoofKext: Successfully intercepted Intel 0x46A8 and spoofed to AMD 0x%x\n", SPOOFED_AMD_DEVICE_ID);
     }
 
     return IOService::start(provider);
