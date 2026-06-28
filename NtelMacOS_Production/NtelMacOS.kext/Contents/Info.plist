@@ -33,9 +33,11 @@
             <key>IOProviderClass</key>
             <string>IOPCIDevice</string>
             <key>SpoofVendorID</key>
-            <integer>4098</integer> 
+            <integer>32902</integer>
             <key>SpoofDeviceID</key>
-            <integer>29504</integer> 
+            <integer>35410</integer>
+            <key>AAPL,ig-platform-id</key>
+            <data>AABaig==</data> 
         </dict>
     </dict>
     <key>OSBundleLibraries</key>

@@ -2,11 +2,15 @@
 #include <string.h>
 #include <stdio.h>
 
-// In a real macOS Kext, we would use IOLock or IORecursiveLock
-// For this implementation, we assume the caller manages atomicity 
-// or we use atomic builtins for the indices.
+#ifdef __APPLE__
+#include <libkern/OSAtomic.h>
+#define NTEL_MEMORY_BARRIER() OSMemoryBarrier()
+#else
+#define NTEL_MEMORY_BARRIER() __sync_synchronize()
+#endif
 
 bool ntel_ring_init(NtelRingContext *ctx, void *shared_mem, uint32_t size) {
+    if (!ctx || !shared_mem) return false;
     if (size < sizeof(struct NtelSharedRingHeader) || size > NTEL_RING_MAX_CAPACITY) {
         return false;
     }
@@ -15,11 +19,12 @@ bool ntel_ring_init(NtelRingContext *ctx, void *shared_mem, uint32_t size) {
     ctx->buffer_base = (uint8_t *)shared_mem + sizeof(struct NtelSharedRingHeader);
     ctx->capacity_bytes = size - sizeof(struct NtelSharedRingHeader);
 
-    // Initialize header
     ctx->header->writeIdx = 0;
     ctx->header->readIdx = 0;
-    ctx->header->capacityDW = ctx->capacity_bytes / 4; // Double Word capacity
+    ctx->header->capacityDW = ctx->capacity_bytes / 4;
     memset(ctx->header->reserved, 0, sizeof(ctx->header->reserved));
+
+    NTEL_MEMORY_BARRIER();
 
     return true;
 }
@@ -31,55 +36,33 @@ bool ntel_ring_try_write(NtelRingContext *ctx, const uint8_t *data, uint32_t len
     uint32_t current_w = ctx->header->writeIdx;
     uint32_t current_r = ctx->header->readIdx;
 
-    // Calculate available space
     uint32_t used;
     if (current_w >= current_r) {
         used = current_w - current_r;
     } else {
         used = ctx->capacity_bytes - (current_r - current_w);
     }
-    
-    // Standard MPSC boundary: ensure we leave at least one byte 
-    // to distinguish between full and empty.
-    uint32_t free = ctx->capacity_bytes - used;
-    
-    // If the ring is totally full, free will be 0.
-    if (free == 0) return false;
-    
-    // To prevent w == r when full, we treat 'full' as capacity - 1
-    if (len >= free) return false;
 
-    // Handle wraparound write
+    uint32_t free_space = ctx->capacity_bytes - used;
+
+    if (free_space == 0) return false;
+    if (len >= free_space) return false;
+
     uint32_t space_to_end = ctx->capacity_bytes - current_w;
 
     if (len <= space_to_end) {
         memcpy(ctx->buffer_base + current_w, data, len);
     } else {
-        // Split write
         memcpy(ctx->buffer_base + current_w, data, space_to_end);
         memcpy(ctx->buffer_base, data + space_to_end, len - space_to_end);
     }
 
-    // --- Cache Coherency Protocol (EVP Section 2.2) ---
-    // 1. Eviction: Flush modified cache lines to main memory.
-    // In a simulation, we iterate over the written range.
-    for (uint32_t i = 0; i < len; i += 64) {
-        void *ptr = (len <= space_to_end) ? 
-                    (ctx->buffer_base + current_w + i) : 
-                    (i < space_to_end ? ctx->buffer_base + current_w + i : ctx->buffer_base + (i - space_to_end));
-        
-        // Bound check for the last chunk
-        if ((uint8_t*)ptr < ctx->buffer_base || (uint8_t*)ptr >= ctx->buffer_base + ctx->capacity_bytes) break;
-        
-        __builtin_ia32_clflush(ptr);
-    }
+    NTEL_MEMORY_BARRIER();
 
-    // 2. Barrier: Ensure all stores are completed before updating the index.
-    __sync_synchronize();
-
-    // Update write index with modulo arithmetic
     ctx->header->writeIdx = (current_w + len) % ctx->capacity_bytes;
-    
+
+    NTEL_MEMORY_BARRIER();
+
     return true;
 }
 
@@ -88,6 +71,8 @@ bool ntel_ring_try_read(NtelRingContext *ctx, uint8_t *out_data, uint32_t max_le
 
     uint32_t current_w = ctx->header->writeIdx;
     uint32_t current_r = ctx->header->readIdx;
+
+    NTEL_MEMORY_BARRIER();
 
     if (current_w == current_r) {
         *bytes_read = 0;
@@ -107,12 +92,16 @@ bool ntel_ring_try_read(NtelRingContext *ctx, uint8_t *out_data, uint32_t max_le
     if (to_read <= space_to_end) {
         memcpy(out_data, ctx->buffer_base + current_r, to_read);
     } else {
-        // Split read
         memcpy(out_data, ctx->buffer_base + current_r, space_to_end);
         memcpy(out_data + space_to_end, ctx->buffer_base, to_read - space_to_end);
     }
 
+    NTEL_MEMORY_BARRIER();
+
     ctx->header->readIdx = (current_r + to_read) % ctx->capacity_bytes;
+
+    NTEL_MEMORY_BARRIER();
+
     *bytes_read = to_read;
 
     return true;
