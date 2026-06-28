@@ -37,7 +37,7 @@ void test_ring_wraparound(NtelSimulationEnvironment *env);
 // Environmental Stress Tests
 void test_monkey_brain_fuzzer(NtelSimulationEnvironment *env);
 void test_thread_riot(NtelSimulationEnvironment *env);
-void test_chokehold_exhaustion(NtelSimulationEnvironment *env);
+void test_chokehold(NtelSimulationEnvironment *env);
 void test_context_bleed(NtelSimulationEnvironment *env);
 
 // End-to-End

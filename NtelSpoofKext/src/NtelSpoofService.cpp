@@ -2,14 +2,15 @@
 #include <IOKit/pci/IOPCIDevice.h>
 #include <libkern/OSByteOrder.h>
 
-// Intel UHD 770 (Alder Lake) — 1235U iGPU device ID is 0x46A8
 #define INTEL_UHD770_VENDOR_ID 0x8086
 #define INTEL_UHD770_DEVICE_ID 0x46A8
 
-// Spoofed AMD Radeon (Targeting a mobile Polaris-based chip for AMDRadeonX4000 compatibility)
-// Example: AMD Radeon RX 550 / Vega Mobile target
-#define SPOOFED_AMD_VENDOR_ID 0x1002
-#define SPOOFED_AMD_DEVICE_ID 0x7340 
+// Intel Ice Lake (Gen11) iGPU — closest supported architecture to 12th Gen Iris Xe
+// AAPL,ig-platform-id: 0x00005A08 (AABaig== base64)
+// device-id: 0x8A52 (UooAAA== base64) — Ice Lake GT2
+#define SPOOFED_IGPU_PLATFORM_ID 0x00005A08
+#define SPOOFED_DEVICE_ID        0x8A52
+#define INTEL_VENDOR_ID          0x8086
 
 class NtelSpoofService : public IOService {
     OSDeclareDefaultStructors(NtelSpoofService)
@@ -33,22 +34,23 @@ bool NtelSpoofService::start(IOService *provider) {
         return false;
     }
 
-    // Verify we are actually looking at the Intel UHD 770
-    if (pciDevice->getVendorID() == INTEL_UHD770_VENDOR_ID &&
-        pciDevice->getDeviceID() == INTEL_UHD770_DEVICE_ID) {
-        
-        // Perform the Spoofing
-        // Note: In a real Kext, we must manipulate the registry properties
-        // so that subsequent IOKit matching uses the spoofed IDs.
-        
-        pciDevice->setProperty("vendor-id", (OSNumber *)OSNumber::withNumber(SPOOFED_AMD_VENDOR_ID, 32));
-        pciDevice->setProperty("device-id", (OSNumber *)OSNumber::withNumber(SPOOFED_AMD_DEVICE_ID, 32));
-        
-        // Also spoof the class code to match AMD Graphics
-        pciDevice->setProperty("class-code", (OSNumber *)OSNumber::withNumber(0x03000000, 32));
-
-        IOLog("NtelSpoofKext: Successfully intercepted Intel 0x46A8 and spoofed to AMD 0x%x\n", SPOOFED_AMD_DEVICE_ID);
+    if (pciDevice->getVendorID() != INTEL_UHD770_VENDOR_ID ||
+        pciDevice->getDeviceID() != INTEL_UHD770_DEVICE_ID) {
+        IOLog("NtelSpoofKext: Not target device (vendor=0x%x, device=0x%x)\n",
+              pciDevice->getVendorID(), pciDevice->getDeviceID());
+        return false;
     }
+
+    // Spoof to Intel Ice Lake Gen11 iGPU for AppleIntelICLLPGraphicsFramebuffer compatibility
+    pciDevice->setProperty("AAPL,ig-platform-id",
+                           OSData::withBytes(&SPOOFED_IGPU_PLATFORM_ID, sizeof(SPOOFED_IGPU_PLATFORM_ID)));
+    pciDevice->setProperty("device-id",
+                           OSData::withBytes(&SPOOFED_DEVICE_ID, sizeof(SPOOFED_DEVICE_ID)));
+    pciDevice->setProperty("vendor-id",
+                           OSData::withBytes(&INTEL_VENDOR_ID, sizeof(INTEL_VENDOR_ID)));
+
+    IOLog("NtelSpoofKext: Spoofed Intel UHD 770 (0x46A8) -> Ice Lake Gen11 (0x%04X, platform=0x%08X)\n",
+          SPOOFED_DEVICE_ID, SPOOFED_IGPU_PLATFORM_ID);
 
     return IOService::start(provider);
 }
