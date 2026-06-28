@@ -60,6 +60,23 @@ bool ntel_ring_try_write(NtelRingContext *ctx, const uint8_t *data, uint32_t len
         memcpy(ctx->buffer_base, data + space_to_end, len - space_to_end);
     }
 
+    // --- Cache Coherency Protocol (EVP Section 2.2) ---
+    // 1. Eviction: Flush modified cache lines to main memory.
+    // In a simulation, we iterate over the written range.
+    for (uint32_t i = 0; i < len; i += 64) {
+        void *ptr = (len <= space_to_end) ? 
+                    (ctx->buffer_base + current_w + i) : 
+                    (i < space_to_end ? ctx->buffer_base + current_w + i : ctx->buffer_base + (i - space_to_end));
+        
+        // Bound check for the last chunk
+        if ((uint8_t*)ptr < ctx->buffer_base || (uint8_t*)ptr >= ctx->buffer_base + ctx->capacity_bytes) break;
+        
+        __builtin_ia32_clflush(ptr);
+    }
+
+    // 2. Barrier: Ensure all stores are completed before updating the index.
+    __sync_synchronize();
+
     // Update write index with modulo arithmetic
     ctx->header->writeIdx = (current_w + len) % ctx->capacity_bytes;
     

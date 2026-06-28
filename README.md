@@ -16,12 +16,16 @@
 ## 🎯 Current Status
 
 - **Target GPU**: Intel Core i5/i7-1235U (Alder Lake-U, Iris Xe Graphics)
-- **Spoof Target**: AMD Radeon Pro W5500M
+- **Spoof Target**: AMD Radeon Pro 5500M  <!-- device ID 0x7340 -->
 - **Status**: Experimental. Core functionality is in place, but stability may vary.
 
 ## 🚀 Quick Start Guide (For Users)
 
 If you just want to get graphics acceleration working on your 1235U, follow these steps.
+
+The following kexts must be present in your EFI before proceeding:
+- `Lilu.kext`
+- `WhateverGreen.kext`
 
 ### 1. OpenCore Requirements
 
@@ -31,21 +35,31 @@ Your OpenCore configuration must be prepared to handle the spoofed identity and 
 Add the following to your `boot-args` in your `config.plist`:
 
 ```
-amfi_get_out_of_my_way=1 cs_allow_invalid=1 agdpmod=pikera
+amfi=0x80 agdpmod=pikera
 ```
 
-- `amfi_get_out_of_my_way=1`: Allows loading unsigned DriverKit extensions.
-- `cs_allow_invalid=1`: Allows kernel extensions with non-standard signatures.
-- `agdpmod=pikera`: Prevents black-screen issues common with AMD spoofing.
+- `amfi=0x80`: Disables AMFI enforcement to allow loading unsigned DriverKit extensions.
+- `agdpmod=pikera`: Prevents black-screen issues common with AMD spoofing (requires WhateverGreen).
 
 **Required DeviceProperties:**
-Inject the following into your `DeviceProperties` to trick macOS into seeing an AMD Radeon Pro W5500M:
+Inject the following into your `DeviceProperties` to trick macOS into seeing an AMD Radeon Pro 5500M:
+
+> Before using this path, confirm it on your board:
+>   gfxutil -f GFX0
+> or:
+>   ioreg -l | grep -i igpu
 
 - **Path**: `PciRoot(0x0)/Pci(0x2,0x0)`
 - **Properties**:
-  - `device-id`: `0x73400000`
-  - `AAPL,ig-platform-id`: `00000000` (Disable internal graphics)
-  - `vendor-id`: `0x10020000`
+  - `device-id`: `<data>40730000</data>`
+  - `vendor-id`: `<data>02100000</data>`
+  <!-- AAPL,ig-platform-id REMOVED. Setting it to 00000000 does NOT disable
+       the iGPU — it sets the Intel framebuffer platform ID to entry 0.
+       Omit this key entirely when doing AMD identity spoofing. -->
+
+> [!IMPORTANT]
+> Use EITHER OpenCore DeviceProperties OR NtelSpoofKext — NOT both.
+> If you configured device-id/vendor-id above, do NOT load NtelSpoofKext.
 
 ### 2. Deployment
 
@@ -62,7 +76,7 @@ Inject the following into your `DeviceProperties` to trick macOS into seeing an 
 
 | Symptom                                         | Likely Diagnosis               | The Fix                                                                                                             |
 | :---------------------------------------------- | :----------------------------- | :------------------------------------------------------------------------------------------------------------------ |
-| **Immediate Kernel Panic on boot**              | AMFI or SIP is still active.   | Verify `boot-args` in NVRAM and ensure `amfi_get_out_of_my_way=1` is present.                                       |
+| **Immediate Kernel Panic on boot**              | AMFI or SIP is still active.   | Verify `boot-args` in NVRAM and ensure `amfi=0x80` is present.                                       |
 | **System boots, but graphics freeze after ~2s** | Asynchronous Watchdog Trip.    | The command stream is stalling. Check logs for `NtelWatchdog` alerts; ensure firmware is correctly loaded.          |
 | **Visual artifacts / "Bleeding" textures**      | Context Isolation Failure.     | The `_activeContextID` failed to reset. Check for conflicting third-party kexts interfering with memory management. |
 | **"Command not found" during deployment**       | Missing execution permissions. | Run `chmod +x deploy-dev.sh`.                                                                                       |
@@ -88,7 +102,12 @@ We welcome contributions! To get started, you'll need a standard macOS developme
 
 ### Firmware Sourcing
 
-The driver requires Intel Xe-LP firmware blobs. These can be sourced from the official `linux-firmware` repository. Ensure `guc_xe_lp.bin` and `huc_xe_lp.bin` are placed in the `firmware/bin/` directory before building.
+> [!WARNING]
+> **Firmware loading is not yet implemented.** The linux-firmware blobs
+> (guc_xe_lp.bin / huc_xe_lp.bin) are ELF-wrapped for the Linux kernel's
+> request_firmware() API. macOS has no equivalent loading pathway and no code
+> in this project uses these files. Do not source or place them; the build
+> does not need them and doing so gives false confidence in unbuilt features.
 
 For detailed build instructions, debugging protocols, and contribution guidelines, please refer to the **Development & Engineering Guide**.
 
