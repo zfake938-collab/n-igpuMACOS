@@ -21,6 +21,7 @@ typedef struct {
     NtelRingContext *ring;
     NtelTranslationEngine *engine;
     uint32_t frame_count;
+    uint32_t test_failures;
     bool watchdog_triggered;
 } NtelSimulationEnvironment;
 
@@ -40,7 +41,17 @@ void test_thread_riot(NtelSimulationEnvironment *env);
 void test_chokehold(NtelSimulationEnvironment *env);
 void test_context_bleed(NtelSimulationEnvironment *env);
 
+void test_shader_cache(NtelSimulationEnvironment *env);
+void test_hash_collision_rejection(NtelSimulationEnvironment *env);
+
+// Stress Tests
+void test_stress_ring_multithread(NtelSimulationEnvironment *env, uint32_t num_threads);
+void test_stress_cache_concurrent(NtelSimulationEnvironment *env, uint32_t num_threads);
+
 // End-to-End
 void test_e2e_pipeline(NtelSimulationEnvironment *env);
+
+// CLI runner
+int ntel_sim_run(int argc, char *argv[]);
 
 #endif // NTEL_SIMULATION_H

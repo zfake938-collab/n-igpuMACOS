@@ -1,30 +1,42 @@
 #include <IOKit/IOService.h>
 #include <IOKit/pci/IOPCIDevice.h>
 #include <libkern/OSByteOrder.h>
+#include <libkern/OSData.h>
 
-#define INTEL_UHD770_VENDOR_ID 0x8086
-#define INTEL_UHD770_DEVICE_ID 0x46A8
+static const uint32_t kIntelUhd770VendorId = 0x8086;
+static const uint32_t kIntelUhd770DeviceId = 0x46A8;
 
-// Intel Ice Lake (Gen11) iGPU — closest supported architecture to 12th Gen Iris Xe
+// Intel Ice Lake (Gen11) iGPU - closest supported architecture to 12th Gen Iris Xe
 // AAPL,ig-platform-id: 0x00005A08 (AABaig== base64)
-// device-id: 0x8A52 (UooAAA== base64) — Ice Lake GT2
-#define SPOOFED_IGPU_PLATFORM_ID 0x00005A08
-#define SPOOFED_DEVICE_ID        0x8A52
-#define INTEL_VENDOR_ID          0x8086
+// device-id: 0x8A52 (UooAAA== base64) - Ice Lake GT2
+static const uint32_t kSpoofedIgpuPlatformId = 0x00005A08;
+static const uint32_t kSpoofedDeviceId = 0x00008A52;
+static const uint32_t kIntelVendorId = 0x00008086;
+
+static bool setUInt32DataProperty(IOPCIDevice *pciDevice, const char *key, const uint32_t *value) {
+    OSData *data = OSData::withBytes(value, sizeof(*value));
+    if (!data) {
+        return false;
+    }
+
+    bool ok = pciDevice->setProperty(key, data);
+    data->release();
+    return ok;
+}
 
 class NtelSpoofService : public IOService {
     OSDeclareDefaultStructors(NtelSpoofService)
 
 public:
-    virtual bool init(OSObject *provider) override;
+    virtual bool init(OSDictionary *dictionary = NULL) override;
     virtual bool start(IOService *provider) override;
     virtual void stop(IOService *provider) override;
 };
 
 OSDefineMetaClassAndStructors(NtelSpoofService, IOService)
 
-bool NtelSpoofService::init(OSObject *provider) {
-    if (!IOService::init(provider)) return false;
+bool NtelSpoofService::init(OSDictionary *dictionary) {
+    if (!IOService::init(dictionary)) return false;
     return true;
 }
 
@@ -34,23 +46,23 @@ bool NtelSpoofService::start(IOService *provider) {
         return false;
     }
 
-    if (pciDevice->getVendorID() != INTEL_UHD770_VENDOR_ID ||
-        pciDevice->getDeviceID() != INTEL_UHD770_DEVICE_ID) {
+    if (pciDevice->getVendorID() != kIntelUhd770VendorId ||
+        pciDevice->getDeviceID() != kIntelUhd770DeviceId) {
         IOLog("NtelSpoofKext: Not target device (vendor=0x%x, device=0x%x)\n",
               pciDevice->getVendorID(), pciDevice->getDeviceID());
         return false;
     }
 
     // Spoof to Intel Ice Lake Gen11 iGPU for AppleIntelICLLPGraphicsFramebuffer compatibility
-    pciDevice->setProperty("AAPL,ig-platform-id",
-                           OSData::withBytes(&SPOOFED_IGPU_PLATFORM_ID, sizeof(SPOOFED_IGPU_PLATFORM_ID)));
-    pciDevice->setProperty("device-id",
-                           OSData::withBytes(&SPOOFED_DEVICE_ID, sizeof(SPOOFED_DEVICE_ID)));
-    pciDevice->setProperty("vendor-id",
-                           OSData::withBytes(&INTEL_VENDOR_ID, sizeof(INTEL_VENDOR_ID)));
+    if (!setUInt32DataProperty(pciDevice, "AAPL,ig-platform-id", &kSpoofedIgpuPlatformId) ||
+        !setUInt32DataProperty(pciDevice, "device-id", &kSpoofedDeviceId) ||
+        !setUInt32DataProperty(pciDevice, "vendor-id", &kIntelVendorId)) {
+        IOLog("NtelSpoofKext: Failed to allocate spoof registry properties\n");
+        return false;
+    }
 
     IOLog("NtelSpoofKext: Spoofed Intel UHD 770 (0x46A8) -> Ice Lake Gen11 (0x%04X, platform=0x%08X)\n",
-          SPOOFED_DEVICE_ID, SPOOFED_IGPU_PLATFORM_ID);
+          kSpoofedDeviceId, kSpoofedIgpuPlatformId);
 
     return IOService::start(provider);
 }

@@ -1,7 +1,8 @@
-#include <libkern/libkern.h>
+#ifndef NTEL_SPOOF_SERVICE_H
+#define NTEL_SPOOF_SERVICE_H
+
 #include <IOKit/IOService.h>
 
-extern class NtelSpoofService NtelSpoofService;
+class NtelSpoofService;
 
-// Minimalistic header for the service
-// In a full build, this would be part of a properly structured Xcode project
+#endif // NTEL_SPOOF_SERVICE_H

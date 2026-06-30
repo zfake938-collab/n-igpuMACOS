@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#ifndef __APPLE__
+#include <pthread.h>
+#endif
 
 /**
  * @brief NtelSharedRingHeader
@@ -24,6 +27,12 @@ typedef struct {
     struct NtelSharedRingHeader *header;
     uint8_t *buffer_base;
     uint32_t capacity_bytes;
+#ifdef __APPLE__
+    void *lock;
+#else
+    pthread_mutex_t lock;
+    bool lock_initialized;
+#endif
 } NtelRingContext;
 
 // Core API

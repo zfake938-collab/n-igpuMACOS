@@ -8,6 +8,7 @@
 #include <sys/fcntl.h>
 #include <sys/uio.h>
 #include <kern/debug.h>
+#include <IOKit/IOLib.h>
 #endif
 
 static NtelFirmwareBlob *get_blob_for_type(NtelFirmwareContext *ctx, NtelFirmwareType type) {
@@ -29,12 +30,12 @@ static uint32_t simple_checksum(const uint8_t *data, uint32_t size) {
 #ifdef __APPLE__
 
 static NtelFirmwareResult ntel_fw_read_vnode(const char *path, NtelFirmwareBlob *blob) {
-    vnode_t vp;
+    vnode_t vp = NULL;
     vfs_context_t ctx = vfs_context_current();
     int error;
 
     error = vnode_open(path, O_RDONLY, 0, VNODE_LOOKUP_NOFOLLOW, &vp, ctx);
-    if (error != 0) {
+    if (error != 0 || vp == NULL) {
         printf("[FW] vnode_open failed for %s (error=%d)\n", path, error);
         return NTEL_FW_ERR_VNODE_OPEN;
     }
@@ -43,31 +44,37 @@ static NtelFirmwareResult ntel_fw_read_vnode(const char *path, NtelFirmwareBlob 
     VATTR_INIT(&va);
     VATTR_WANTED(&va, va_data_size);
     error = vnode_getattr(vp, &va, ctx);
-    if (error != 0 || va.va_data_size > NTEL_FW_MAX_BLOB_SIZE) {
+    if (error != 0) {
+        vnode_close(vp, O_RDONLY, ctx);
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+
+    if (va.va_data_size == 0 || va.va_data_size > NTEL_FW_MAX_BLOB_SIZE) {
         vnode_close(vp, O_RDONLY, ctx);
         return NTEL_FW_ERR_TOO_LARGE;
     }
 
     blob->size = (uint32_t)va.va_data_size;
-    blob->data = (uint8_t *)IOMallocAligned(blob->size, 64);
+    blob->data = (uint8_t *)IOMallocContiguous(blob->size, 64, NULL);
     if (!blob->data) {
+        blob->size = 0;
+        blob->loaded = false;
         vnode_close(vp, O_RDONLY, ctx);
         return NTEL_FW_ERR_LOAD_FAILED;
     }
 
-    uio_t uio;
-    uio_create(1, 0, UIO_SYSSPACE, UIO_READ, &uio);
-    uio_addiov(uio, CAST_USER_ADDR_T(blob->data), blob->size);
-
     error = vn_rdwr(UIO_READ, vp, blob->data, blob->size, 0,
-                    UIO_SYSSPACE, IO_NODELOCKED | IO_NOCACHE,
+                    UIO_SYSSPACE, IO_NOCACHE,
                     vfs_context_ucred(ctx), NULL, NULL);
 
     vnode_close(vp, O_RDONLY, ctx);
+    vp = NULL;
 
     if (error != 0) {
-        IOFreeAligned(blob->data, blob->size);
+        IOFreeContiguous(blob->data, blob->size);
         blob->data = NULL;
+        blob->size = 0;
+        blob->loaded = false;
         return NTEL_FW_ERR_VNODE_READ;
     }
 
@@ -84,11 +91,17 @@ static NtelFirmwareResult ntel_fw_read_file(const char *path, NtelFirmwareBlob *
         return NTEL_FW_ERR_NOT_FOUND;
     }
 
-    fseek(fp, 0, SEEK_END);
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
     long fsize = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+    if (fsize <= 0 || fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return NTEL_FW_ERR_TOO_LARGE;
+    }
 
-    if (fsize <= 0 || (uint32_t)fsize > NTEL_FW_MAX_BLOB_SIZE) {
+    if ((uint32_t)fsize > NTEL_FW_MAX_BLOB_SIZE) {
         fclose(fp);
         return NTEL_FW_ERR_TOO_LARGE;
     }
@@ -106,6 +119,8 @@ static NtelFirmwareResult ntel_fw_read_file(const char *path, NtelFirmwareBlob *
     if (read_bytes != blob->size) {
         free(blob->data);
         blob->data = NULL;
+        blob->size = 0;
+        blob->loaded = false;
         return NTEL_FW_ERR_VNODE_READ;
     }
 
@@ -122,6 +137,7 @@ NtelFirmwareResult ntel_fw_inject_all(NtelFirmwareContext *ctx) {
                                                     "firmware/bin/guc_xe_lp.raw");
     if (guc_res != NTEL_FW_SUCCESS) {
         printf("[FW] GuC load failed: %d\n", guc_res);
+        ntel_fw_cleanup(ctx);
         return guc_res;
     }
     ctx->guc_loaded = true;
@@ -130,6 +146,7 @@ NtelFirmwareResult ntel_fw_inject_all(NtelFirmwareContext *ctx) {
                                                     "firmware/bin/huc_xe_lp.raw");
     if (huc_res != NTEL_FW_SUCCESS) {
         printf("[FW] HuC load failed: %d\n", huc_res);
+        ntel_fw_cleanup(ctx);
         return huc_res;
     }
     ctx->huc_loaded = true;
@@ -174,21 +191,23 @@ void ntel_fw_cleanup(NtelFirmwareContext *ctx) {
 
     if (ctx->guc_blob.data) {
 #ifdef __APPLE__
-        IOFreeAligned(ctx->guc_blob.data, ctx->guc_blob.size);
+        IOFreeContiguous(ctx->guc_blob.data, ctx->guc_blob.size);
 #else
         free(ctx->guc_blob.data);
 #endif
         ctx->guc_blob.data = NULL;
+        ctx->guc_blob.size = 0;
         ctx->guc_blob.loaded = false;
     }
 
     if (ctx->huc_blob.data) {
 #ifdef __APPLE__
-        IOFreeAligned(ctx->huc_blob.data, ctx->huc_blob.size);
+        IOFreeContiguous(ctx->huc_blob.data, ctx->huc_blob.size);
 #else
         free(ctx->huc_blob.data);
 #endif
         ctx->huc_blob.data = NULL;
+        ctx->huc_blob.size = 0;
         ctx->huc_blob.loaded = false;
     }
 
