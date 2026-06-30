@@ -16,8 +16,8 @@
 ## 🎯 Current Status
 
 - **Target GPU**: Intel Core i5/i7-1235U (Alder Lake-U, Iris Xe Graphics)
-- **Spoof Target**: AMD Radeon Pro 5500M  <!-- device ID 0x7340 -->
-- **Status**: Experimental. Core functionality is in place, but stability may vary.
+- **Spoof Target**: Intel Ice Lake Gen11 iGPU  <!-- device ID 0x8A52, platform 0x5A08 -->
+- **Status**: Experimental. Core spoofing is implemented; translation engine and firmware upload require separate development phase.
 
 ## 🚀 Quick Start Guide (For Users)
 
@@ -35,14 +35,13 @@ Your OpenCore configuration must be prepared to handle the spoofed identity and 
 Add the following to your `boot-args` in your `config.plist`:
 
 ```
-amfi=0x80 agdpmod=pikera
+amfi=0x80
 ```
 
 - `amfi=0x80`: Disables AMFI enforcement to allow loading unsigned DriverKit extensions.
-- `agdpmod=pikera`: Prevents black-screen issues common with AMD spoofing (requires WhateverGreen).
 
 **Required DeviceProperties:**
-Inject the following into your `DeviceProperties` to trick macOS into seeing an AMD Radeon Pro 5500M:
+Inject the following into your `DeviceProperties` to spoof the device as an Intel Ice Lake Gen11 iGPU (required for `AppleIntelICLLPGraphicsFramebuffer` binding):
 
 > Before using this path, confirm it on your board:
 >   gfxutil -f GFX0
@@ -51,15 +50,12 @@ Inject the following into your `DeviceProperties` to trick macOS into seeing an 
 
 - **Path**: `PciRoot(0x0)/Pci(0x2,0x0)`
 - **Properties**:
-  - `device-id`: `<data>40730000</data>`
-  - `vendor-id`: `<data>02100000</data>`
-  <!-- AAPL,ig-platform-id REMOVED. Setting it to 00000000 does NOT disable
-       the iGPU — it sets the Intel framebuffer platform ID to entry 0.
-       Omit this key entirely when doing AMD identity spoofing. -->
+  - `device-id`: `<data>528A0000</data>`  <!-- Ice Lake GT2: 0x8A52 -->
+  - `AAPL,ig-platform-id`: `<data>AABaig==</data>`  <!-- 0x5A08 -->
 
 > [!IMPORTANT]
 > Use EITHER OpenCore DeviceProperties OR NtelSpoofKext — NOT both.
-> If you configured device-id/vendor-id above, do NOT load NtelSpoofKext.
+> If you configured device-id above via OpenCore, do NOT load NtelSpoofKext.
 
 ### 2. Deployment
 
@@ -74,23 +70,21 @@ Inject the following into your `DeviceProperties` to trick macOS into seeing an 
 
 ### 🛠️ Troubleshooting Matrix
 
-| Symptom                                         | Likely Diagnosis               | The Fix                                                                                                             |
-| :---------------------------------------------- | :----------------------------- | :------------------------------------------------------------------------------------------------------------------ |
-| **Immediate Kernel Panic on boot**              | AMFI or SIP is still active.   | Verify `boot-args` in NVRAM and ensure `amfi=0x80` is present.                                       |
-| **System boots, but graphics freeze after ~2s** | Asynchronous Watchdog Trip.    | The command stream is stalling. Check logs for `NtelWatchdog` alerts; ensure firmware is correctly loaded.          |
-| **Visual artifacts / "Bleeding" textures**      | Context Isolation Failure.     | The `_activeContextID` failed to reset. Check for conflicting third-party kexts interfering with memory management. |
-| **"Command not found" during deployment**       | Missing execution permissions. | Run `chmod +x deploy-dev.sh`.                                                                                       |
+| Symptom                                  | Likely Diagnosis               | The Fix                                                                                                          |
+| :--------------------------------------- | :----------------------------- | :--------------------------------------------------------------------------------------------------------------- |
+| **Immediate Kernel Panic on boot**       | AMFI or SIP is still active.   | Verify `boot-args` in NVRAM and ensure `amfi=0x80` is present.                                          |
+| **Kext fails to load**                   | Binary not built or permissions. | Build the kext with KDK/Xcode, then run `chmod +x deploy-dev.sh`.                                       |
 
 ---
 
 ## 🧪 How It Works
 
-Ntel uses a "translation sandwich" approach to enable the Intel iGPU without rewriting the entire graphics stack. It's built on four architectural pillars:
+Ntel uses identity spoofing to enable the Intel Alder Lake iGPU by leveraging Apple's native `AppleIntelICLLPGraphicsFramebuffer` driver. The architecture is:
 
-1.  **PCIe Identity Spoofing**: A supervisor kext (`NtelSpoofKext`) intercepts the `IOPCIDevice` probe to replace the Intel PCI ID (`0x46A8`) with an AMD Radeon identity. This forces macOS to load the native `AMDRadeonX6000` drivers.
-2.  **High-Speed IPC Ring**: A lock-free, VA-invariant circular buffer (`NtelSharedRing`) allows for extremely fast communication between the user-space DriverKit extension and the kernel-space kext.
-3.  **Real-Time ISA Translation**: A DriverKit extension (`NtelShaderChannel.dext`) intercepts the Metal command stream (in Apple Intermediate Representation, or AIR), and translates it on-the-fly into Intel Gen12-compatible bytecode.
-4.  **Firmware Injection**: The kext handles loading the required `GuC` (Graphics Microcontroller) and `HuC` (HEVC Microcontroller) firmware blobs into the GPU to initialize its command submission and media pipelines.
+1.  **PCIe Identity Spoofing**: `NtelSpoofKext` intercepts the `IOPCIDevice` probe to replace the device ID (`0x46A8`) with Intel Ice Lake Gen11 (`0x8A52`) and sets `AAPL,ig-platform-id` (`0x5A08`). This causes macOS to bind `AppleIntelICLLPGraphicsFramebuffer`, which natively supports the Xe architecture.
+2.  **High-Speed IPC Ring**: `NtelSharedRing` provides a lock-free circular buffer for kernel-user communication.
+3.  **Translation Engine** (Phase 2): `NtelTranslationEngine` provides a stub translation pipeline. Real AIR→Gen12 firmware translation requires significant additional development.
+4.  **Firmware Injection** (Phase 2): `NtelFirmwareInjector` reads GuC/HuC blobs into kernel memory for future hardware upload. Actual GPU register programming not yet implemented.
 
 For a deeper technical explanation of the memory model, ISA translation, and security protocols, please see the **Architecture Deep Dive**.
 
@@ -103,11 +97,9 @@ We welcome contributions! To get started, you'll need a standard macOS developme
 ### Firmware Sourcing
 
 > [!WARNING]
-> **Firmware loading is not yet implemented.** The linux-firmware blobs
-> (guc_xe_lp.bin / huc_xe_lp.bin) are ELF-wrapped for the Linux kernel's
-> request_firmware() API. macOS has no equivalent loading pathway and no code
-> in this project uses these files. Do not source or place them; the build
-> does not need them and doing so gives false confidence in unbuilt features.
+> **Firmware upload to GPU registers is not implemented.** The `NtelFirmwareInjector` reads GuC/HuC blobs into kernel memory, but does not yet push them to hardware via GPU register writes.
+> The linux-firmware blobs (`guc_xe_lp.bin` / `huc_xe_lp.bin`) are ELF-wrapped for Linux's request_firmware() API. Even if sourced, macOS has no equivalent loading pathway.
+> For development, use `firmware/bin/guc_xe_lp.raw` and `huc_xe_lp.raw` — but these would only be read and checksummed, not uploaded to the GPU.
 
 For detailed build instructions, debugging protocols, and contribution guidelines, please refer to the **Development & Engineering Guide**.
 
@@ -115,4 +107,4 @@ For detailed build instructions, debugging protocols, and contribution guideline
 
 ## ⚖️ License
 
-This project is released under the MIT License. See the LICENSE file for details.
+it not right now This project is released under the MIT License. See the LICENSE file for details.

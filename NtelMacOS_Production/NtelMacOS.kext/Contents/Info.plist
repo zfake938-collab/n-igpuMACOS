@@ -32,12 +32,6 @@
             <string>0x46A88086</string>
             <key>IOProviderClass</key>
             <string>IOPCIDevice</string>
-            <key>SpoofVendorID</key>
-            <integer>32902</integer>
-            <key>SpoofDeviceID</key>
-            <integer>35410</integer>
-            <key>AAPL,ig-platform-id</key>
-            <data>AABaig==</data> 
         </dict>
     </dict>
     <key>OSBundleLibraries</key>

@@ -12,7 +12,6 @@ To build and modify the Ntel framework, your development machine must meet the f
 * **macOS Host**: A machine running macOS (Ventura or newer recommended).
 * **Xcode**: Latest stable version.
 * **macOS Kernel Development Kit (KDK)**: You **MUST** install the KDK that matches the exact version of the macOS target you intend to run on. This provides the necessary headers for kernel-mode development.
-* **LLVM-SPIRV**: Required for the translation of Apple Intermediate Representation (AIR) to SPIR-V bytecode.
 * **Build Tools**: `make`, `cmake`, and `clang`.
 
 ### 2. DriverKit Entitlements & Code Signing
@@ -22,30 +21,23 @@ Developing `.dext` (DriverKit) extensions is strictly controlled by Apple.
   ```bash
   codesign --force --deep --sign - --entitlements ./NtelShaderChannel.entitlements NtelShaderChannel.dext
   ```
-* **Production Signing**: For distribution, a valid Apple Developer Program membership is required to obtain the `com.apple.developer.driverkit` and `com.apple.developer.driverkit.transport.pci` entitlements.
+* **Production Signing**: For distribution, a valid Apple Developer Program membership is required. Note that `com.apple.developer.driverkit.transport.pci` is gated by Apple and not available to community developers — ad-hoc signing with SIP disabled is the only option for now.
 
 ---
 
 ## 🏗️ Build Workflow
 
-### 1. Compiling the Simulation Suite
+### 1. Compiling the Simulation Suite (Host Development)
 Before testing on real hardware, always verify your changes using the deterministic simulation environment:
 ```bash
 cd NtelSpoofKext
-gcc -g -I./include ./src/NtelSharedRing.c ./src/NtelTranslationEngine.c ./src/NtelSimulation.c -o sim_test -lpthread
-./sim_test
+make && ./build/ntel_sim --all
 ```
 
-### 2. Compiling the Kext & Dext
-The project is structured to be built via `xcodebuild`.
-* **To build the Supervisor Kext**:
-  ```bash
-  xcodebuild -target NtelMacOSKext -configuration Release
-  ```
-* **To build the Shader Dext**:
-  ```bash
-  xcodebuild -target NtelShaderChannelDext -configuration Release
-  ```
+### 2. Building the Kext & Dext (Target Deployment)
+The kext and dext require kernel development headers (KDK) and Xcode. The project currently lacks `.xcodeproj` files — the kext/dext build workflow needs to be implemented.
+* **Current state**: The simulation suite in `NtelSpoofKext/` is the only buildable component.
+* **Future work**: Add Xcode projects or kernel build system for `NtelMacOS.kext` and `NtelShaderChannel.dext`.
 
 ---
 

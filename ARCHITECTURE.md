@@ -2,6 +2,8 @@
 
 This document provides the technical specifications, mathematical models, and structural layouts used by the Ntel framework. It is intended for systems engineers and researchers working on low-level graphics translation and kernel-mode drivers.
 
+> **Note**: The identity spoofing path (NtelSpoofKext) is implemented and uses Intel Ice Lake Gen11 IDs to bind `AppleIntelICLLPGraphicsFramebuffer`. The translation engine, cache coherency protocol, and firmware injection described below are Phase 2 work-in-progress.
+
 ---
 
 ## 🧠 Core Design Philosophy
@@ -32,13 +34,17 @@ Because the Intel Xe architecture utilizes a non-snooping path for command submi
 3.  **Barrier**: An `_mm_mfence` is issued to prevent compiler/CPU reordering.
 4.  **Doorbell**: The hardware doorbell is rung only after the barrier is confirmed.
 
+> **Implementation Status**: The current ring buffer uses `OSMemoryBarrier()` for ordering. The `_mm_clflush`/`_mm_mfence` cache-line eviction contract for non-snooping GPU visibility requires additional implementation.
+
 ---
 
-## ⚡ ISA Translation: AIR $\rightarrow$ Gen12
+## ⚡ ISA Translation: AIR $\rightarrow$ Gen12 (Phase 2)
 
 The translation engine manages the conversion of Apple Intermediate Representation (AIR) to Intel Execution Unit (EU) bytecode.
 
-### 1. The Command Pipeline
+> **Implementation Status**: `translate_air_to_gen12()` currently implements a stub that XORs input bytes with `0xA5`. The full 3-stage LUT pipeline (Parsing → Transmutation → Descriptor Generation) requires significant additional development.
+
+### 1. The Command Pipeline (Planned)
 The translation follows a three-stage pipeline:
 1.  **Parsing**: Deconstructing the Metal/AIR command buffer.
 2.  **Transmutation**: Mapping AIR opcodes to Gen12 ISA instructions via a high-speed Look-Up Table (LUT).
