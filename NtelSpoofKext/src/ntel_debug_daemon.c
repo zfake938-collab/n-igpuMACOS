@@ -44,12 +44,16 @@ int main(void) {
         }
 
         if (first_run) {
+            /* Start reading from as far back as the ring holds, but avoid
+               unsigned underflow: if fewer entries have been written than the
+               ring capacity, start from the very beginning (seq 0). */
             if (current_write_idx >= NTEL_DEBUG_RING_SIZE) {
                 last_seen_write_idx = current_write_idx - NTEL_DEBUG_RING_SIZE;
             } else {
                 last_seen_write_idx = 0;
             }
-            expected_seq = ring->records[last_seen_write_idx & (NTEL_DEBUG_RING_SIZE - 1)].sequence;
+            uint32_t start_slot = last_seen_write_idx & (NTEL_DEBUG_RING_SIZE - 1);
+            expected_seq = (uint64_t)ring->records[start_slot].sequence;
             first_run = false;
             printf("[DAEMON] Synchronized to sequence %" PRIu64 "\n", expected_seq);
         }
@@ -66,8 +70,13 @@ int main(void) {
                 expected_seq = record.sequence;
             } else if (record.sequence < expected_seq) {
                 printf("[DAEMON] CRITICAL: Double wrap detected. Resynchronizing.\n");
-                last_seen_write_idx = current_write_idx - NTEL_DEBUG_RING_SIZE;
-                expected_seq = ring->records[last_seen_write_idx & (NTEL_DEBUG_RING_SIZE - 1)].sequence;
+                if (current_write_idx >= NTEL_DEBUG_RING_SIZE) {
+                    last_seen_write_idx = current_write_idx - NTEL_DEBUG_RING_SIZE;
+                } else {
+                    last_seen_write_idx = 0;
+                }
+                uint32_t rsync_slot = last_seen_write_idx & (NTEL_DEBUG_RING_SIZE - 1);
+                expected_seq = (uint64_t)ring->records[rsync_slot].sequence;
                 break;
             }
 

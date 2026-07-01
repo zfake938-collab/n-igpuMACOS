@@ -22,7 +22,16 @@ sudo chmod -R 755 ./NtelMacOS.kext
 # Step 3: Load the Supervisor Kext
 echo "[NtelMacOS] Injecting Supervisor Kext (PCIe Spoofing)..."
 if [ -f "./NtelMacOS.kext/Contents/MacOS/NtelMacOS" ]; then
-    sudo kextutil -v ./NtelMacOS.kext
+    # kextutil is deprecated since macOS 13 Ventura; use kmutil load instead.
+    # We keep kextutil as a fallback for macOS 12 (Monterey).
+    OS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
+    if [ "$OS_MAJOR" -ge 13 ] 2>/dev/null; then
+        echo "[NtelMacOS] Using kmutil (macOS $OS_MAJOR)..."
+        sudo kmutil load -u ./NtelMacOS.kext
+    else
+        echo "[NtelMacOS] Using kextutil (macOS $OS_MAJOR / legacy)..."
+        sudo kextutil -v ./NtelMacOS.kext
+    fi
 else
     echo "[ERROR] Kext binary not found. Build the kext first with Xcode/KDK."
     exit 1

@@ -1,6 +1,7 @@
 #include "NtelSharedRing.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 #ifdef __APPLE__
 #include <libkern/OSAtomic.h>
@@ -38,8 +39,8 @@ bool ntel_ring_init(NtelRingContext *ctx, void *shared_mem, uint32_t size) {
     ctx->buffer_base = (uint8_t *)shared_mem + header_size;
     ctx->capacity_bytes = size - header_size;
 
-    ctx->header->writeIdx = 0;
-    ctx->header->readIdx = 0;
+    atomic_store_explicit(&ctx->header->writeIdx, 0, memory_order_relaxed);
+    atomic_store_explicit(&ctx->header->readIdx,  0, memory_order_relaxed);
     ctx->header->capacityDW = ctx->capacity_bytes / 4;
     memset(ctx->header->reserved, 0, sizeof(ctx->header->reserved));
 
@@ -56,8 +57,8 @@ bool ntel_ring_try_write(NtelRingContext *ctx, const uint8_t *data, uint32_t len
     bool wrote = false;
     NTEL_RING_LOCK(ctx);
 
-    uint32_t current_w = ctx->header->writeIdx;
-    uint32_t current_r = ctx->header->readIdx;
+    uint32_t current_w = atomic_load_explicit(&ctx->header->writeIdx, memory_order_relaxed);
+    uint32_t current_r = atomic_load_explicit(&ctx->header->readIdx,  memory_order_relaxed);
 
     uint32_t used;
     if (current_w >= current_r) {
@@ -84,7 +85,9 @@ bool ntel_ring_try_write(NtelRingContext *ctx, const uint8_t *data, uint32_t len
        before the write index update is observed by the reader. */
     NTEL_BARRIER_FULL();
 
-    ctx->header->writeIdx = (current_w + len) % ctx->capacity_bytes;
+    atomic_store_explicit(&ctx->header->writeIdx,
+                          (current_w + len) % ctx->capacity_bytes,
+                          memory_order_release);
 
     wrote = true;
 
@@ -105,12 +108,10 @@ bool ntel_ring_try_read(NtelRingContext *ctx, uint8_t *out_data, uint32_t max_le
     *bytes_read = 0;
     NTEL_RING_LOCK(ctx);
 
-    /* ACQUIRE barrier: read the write index and ensure it is visible
-       before we attempt to read any payload data from the buffer. */
-    uint32_t current_w = ctx->header->writeIdx;
-    NTEL_BARRIER_FULL();
-
-    uint32_t current_r = ctx->header->readIdx;
+    /* ACQUIRE barrier: ensure write index and all payload writes are
+       visible before we read any data from the buffer. */
+    uint32_t current_w = atomic_load_explicit(&ctx->header->writeIdx, memory_order_acquire);
+    uint32_t current_r = atomic_load_explicit(&ctx->header->readIdx,  memory_order_relaxed);
 
     if (current_w == current_r) {
         goto out;
@@ -137,7 +138,9 @@ bool ntel_ring_try_read(NtelRingContext *ctx, uint8_t *out_data, uint32_t max_le
        index update signals to the writer that space is reclaimed. */
     NTEL_BARRIER_FULL();
 
-    ctx->header->readIdx = (current_r + to_read) % ctx->capacity_bytes;
+    atomic_store_explicit(&ctx->header->readIdx,
+                          (current_r + to_read) % ctx->capacity_bytes,
+                          memory_order_release);
 
     *bytes_read = to_read;
     read = true;

@@ -57,35 +57,54 @@ void ntel_debug_ring_append(ntel_debug_ring_t *ring,
                            int32_t last_error) {
     if (!ring) return;
 
+    /* Build the complete record on the stack before publishing it.
+       This prevents a reader from observing a partially-written (torn) record
+       between the slot reservation and the field stores. */
+    ntel_debug_record_t rec_local;
+    rec_local.timestamp   = ntel_debug_now_ns_impl();
+    rec_local.component   = component;
+    rec_local.event_id    = event_id;
+    rec_local.read_idx    = read_idx;
+    rec_local.write_idx   = write_idx_val;
+    rec_local.fence_value = fence_value;
+    rec_local.active_pid  = active_pid;
+    rec_local.last_error  = last_error;
+
+    /* Reserve a slot.  All fields are ready on the stack at this point. */
     uint32_t seq = atomic_fetch_add_explicit(&ring->write_index, 1u, memory_order_relaxed);
+    rec_local.sequence = seq;
+
     uint32_t slot = seq & (NTEL_DEBUG_RING_SIZE - 1u);
 
-    ntel_debug_record_t *rec = &ring->records[slot];
-
-    rec->timestamp   = ntel_debug_now_ns_impl();
-    rec->sequence    = seq;
-    rec->component   = component;
-    rec->event_id    = event_id;
-    rec->read_idx    = read_idx;
-    rec->write_idx   = write_idx_val;
-    rec->fence_value = fence_value;
-    rec->active_pid  = active_pid;
-    rec->last_error  = last_error;
+    /* Copy the complete record into the ring in a single store, then issue
+       a release fence so readers that acquire on write_index see fully-written
+       fields (the ring is a flight-recorder that tolerates overwrite, so we
+       still copy even if the slot may already have been wrapped). */
+    ring->records[slot] = rec_local;
+    atomic_thread_fence(memory_order_release);
 }
 
 int ntel_debug_record_format(char *buf, size_t buflen, const ntel_debug_record_t *rec) {
     if (!buf || !rec || buflen == 0) return -1;
 
     const char *comp_names[] = {"RING", "CACHE", "FW", "SPOOF", "ENGINE"};
+    /* Event IDs start at NTEL_DEBUG_BASE_EVENT_ID+1 (1001) through BASE+4 (1004).
+       Index 0 is unused; the enum has no BASE+0 event, so we skip it explicitly. */
     const char *evt_names[] = {
-        "UNKNOWN", "CACHE_COLLISION_MISMATCH", "SCORCH_PASS", "PID_MISMATCH", "TRANSLATION_FAILED"
+        /* +1 */ "CACHE_COLLISION_MISMATCH",
+        /* +2 */ "SCORCH_PASS",
+        /* +3 */ "PID_MISMATCH",
+        /* +4 */ "TRANSLATION_FAILED"
     };
+    static const uint32_t EVT_COUNT = 4;
 
     const char *comp = (rec->component < 5) ? comp_names[rec->component] : "UNKN";
-    uint32_t evt_index = (rec->event_id >= NTEL_DEBUG_BASE_EVENT_ID &&
-                          rec->event_id < NTEL_DEBUG_BASE_EVENT_ID + 5)
-        ? rec->event_id - NTEL_DEBUG_BASE_EVENT_ID : 0;
-    const char *evt = evt_names[evt_index];
+
+    const char *evt = "UNKN";  /* default for unrecognised event IDs */
+    if (rec->event_id >= NTEL_DEBUG_BASE_EVENT_ID + 1 &&
+        rec->event_id <= NTEL_DEBUG_BASE_EVENT_ID + EVT_COUNT) {
+        evt = evt_names[rec->event_id - (NTEL_DEBUG_BASE_EVENT_ID + 1)];
+    }
 
     return snprintf(buf, buflen,
         "[%llu ns] seq=%u %s:%s ridx=%u widx=%u fence=%u pid=%u err=%d",

@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #ifndef __APPLE__
 #include <pthread.h>
 #endif
@@ -14,10 +15,10 @@
  * not absolute pointers, to allow mapping at different Virtual Addresses.
  */
 struct NtelSharedRingHeader {
-    uint32_t writeIdx;      // Atomic producer offset (byte-based)
-    uint32_t readIdx;       // Consumer offset (byte-based)
-    uint32_t capacityDW;    // Total ring capacity in Double Words
-    uint32_t reserved[13];  // Padding for 64-byte alignment
+    _Atomic(uint32_t) writeIdx;  // Atomic producer offset (byte-based)
+    _Atomic(uint32_t) readIdx;   // Consumer offset (byte-based)
+    uint32_t capacityDW;         // Total ring capacity in Double Words (informational)
+    uint32_t reserved[13];       // Padding for 64-byte alignment
 };
 
 #define NTEL_RING_ALIGNMENT 64

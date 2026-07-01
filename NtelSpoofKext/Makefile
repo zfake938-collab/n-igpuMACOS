@@ -1,6 +1,11 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -std=c11 -I./include -pthread -DNTEL_DEBUG=2
-LDFLAGS = -pthread
+CC = clang
+
+# Set DEBUG=1 for sparse logging, DEBUG=2 for hot-path logging.
+# Example: make DEBUG=2 simulation
+# Default is 0 (no debug logging) to match production/release behaviour.
+DEBUG   ?= 0
+CFLAGS   = -Wall -Wextra -std=c11 -I./include -pthread -DNTEL_DEBUG=$(DEBUG)
+LDFLAGS  = -pthread
 
 SRC_DIR = src
 INC_DIR = include
@@ -38,10 +43,12 @@ $(DAEMON): $(DAEMON_OBJ) $(DEBUG_RING_OBJ)
 
 daemon: $(DAEMON)
 
-test: $(TARGET)
+test:
+	$(MAKE) $(TARGET) DEBUG=2
 	./$(TARGET)
 
-simulation: $(TARGET)
+simulation:
+	$(MAKE) $(TARGET) DEBUG=2
 	./$(TARGET) --threads=4 --stress-cache --stress-ring
 
 clean:

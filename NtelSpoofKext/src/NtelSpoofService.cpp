@@ -3,15 +3,16 @@
 #include <libkern/OSByteOrder.h>
 #include <libkern/OSData.h>
 
-static const uint32_t kIntelUhd770VendorId = 0x8086;
+// Canonical Intel PCI vendor ID — used for both matching and registry property
+static const uint32_t kIntelVendorId       = 0x00008086;
+// Intel UHD 770 (Alder Lake iGPU, 12th Gen) device ID — the target we spoof FROM
 static const uint32_t kIntelUhd770DeviceId = 0x46A8;
 
 // Intel Ice Lake (Gen11) iGPU - closest supported architecture to 12th Gen Iris Xe
 // AAPL,ig-platform-id: 0x00005A08 (AABaig== base64)
 // device-id: 0x8A52 (UooAAA== base64) - Ice Lake GT2
 static const uint32_t kSpoofedIgpuPlatformId = 0x00005A08;
-static const uint32_t kSpoofedDeviceId = 0x00008A52;
-static const uint32_t kIntelVendorId = 0x00008086;
+static const uint32_t kSpoofedDeviceId        = 0x00008A52;
 
 static bool setUInt32DataProperty(IOPCIDevice *pciDevice, const char *key, const uint32_t *value) {
     OSData *data = OSData::withBytes(value, sizeof(*value));
@@ -46,7 +47,7 @@ bool NtelSpoofService::start(IOService *provider) {
         return false;
     }
 
-    if (pciDevice->getVendorID() != kIntelUhd770VendorId ||
+    if (pciDevice->getVendorID() != (kIntelVendorId & 0xFFFF) ||
         pciDevice->getDeviceID() != kIntelUhd770DeviceId) {
         IOLog("NtelSpoofKext: Not target device (vendor=0x%x, device=0x%x)\n",
               pciDevice->getVendorID(), pciDevice->getDeviceID());

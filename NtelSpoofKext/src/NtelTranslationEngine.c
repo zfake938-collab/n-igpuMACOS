@@ -100,10 +100,14 @@ bool ntel_engine_init(NtelTranslationEngine *engine, NtelRingContext *ring) {
 uint32_t ntel_calculate_predicate_mask(uint32_t threads_per_group, uint32_t simd_width) {
     if (simd_width == 0) return 0;
 
+    /* Clamp simd_width to 32: shifts of 32 or more bits on a uint32_t are
+       undefined behaviour in C. Any SIMD width > 32 is treated as "full warp". */
+    if (simd_width > 32) return 0xFFFFFFFF;
+
     uint32_t remainder = threads_per_group % simd_width;
     if (remainder == 0) return 0xFFFFFFFF;
-    if (remainder >= 32) return 0xFFFFFFFF;
 
+    /* remainder is in [1, simd_width-1] ⊆ [1, 31] here — shift is always safe. */
     return (1u << remainder) - 1;
 }
 

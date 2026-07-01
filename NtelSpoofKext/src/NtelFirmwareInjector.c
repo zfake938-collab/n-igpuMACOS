@@ -63,14 +63,16 @@ static NtelFirmwareResult ntel_fw_read_vnode(const char *path, NtelFirmwareBlob 
         return NTEL_FW_ERR_LOAD_FAILED;
     }
 
+    int residual = 0;
     error = vn_rdwr(UIO_READ, vp, blob->data, blob->size, 0,
                     UIO_SYSSPACE, IO_NOCACHE,
-                    vfs_context_ucred(ctx), NULL, NULL);
+                    vfs_context_ucred(ctx), &residual, NULL);
 
     vnode_close(vp, O_RDONLY, ctx);
     vp = NULL;
 
-    if (error != 0) {
+    if (error != 0 || residual != 0) {
+        /* residual != 0 means fewer bytes were read than requested (short-read) */
         IOFreeContiguous(blob->data, blob->size);
         blob->data = NULL;
         blob->size = 0;
@@ -96,9 +98,13 @@ static NtelFirmwareResult ntel_fw_read_file(const char *path, NtelFirmwareBlob *
         return NTEL_FW_ERR_LOAD_FAILED;
     }
     long fsize = ftell(fp);
-    if (fsize <= 0 || fseek(fp, 0, SEEK_SET) != 0) {
+    if (fsize <= 0) {
         fclose(fp);
-        return NTEL_FW_ERR_TOO_LARGE;
+        return NTEL_FW_ERR_LOAD_FAILED;  // empty or invalid file, not "too large"
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return NTEL_FW_ERR_LOAD_FAILED;
     }
 
     if ((uint32_t)fsize > NTEL_FW_MAX_BLOB_SIZE) {
@@ -140,7 +146,6 @@ NtelFirmwareResult ntel_fw_inject_all(NtelFirmwareContext *ctx) {
         ntel_fw_cleanup(ctx);
         return guc_res;
     }
-    ctx->guc_loaded = true;
 
     NtelFirmwareResult huc_res = ntel_fw_load_blob(ctx, NTEL_FIRMWARE_TYPE_HUC,
                                                     "firmware/bin/huc_xe_lp.raw");
@@ -149,6 +154,11 @@ NtelFirmwareResult ntel_fw_inject_all(NtelFirmwareContext *ctx) {
         ntel_fw_cleanup(ctx);
         return huc_res;
     }
+
+    /* Both blobs are confirmed loaded — only now mark the context flags.
+       Setting these flags earlier would leave them inconsistent if the
+       second blob load fails and cleanup is called. */
+    ctx->guc_loaded = true;
     ctx->huc_loaded = true;
 
     printf("[FW] All firmware loaded successfully\n");
