@@ -210,47 +210,62 @@ void test_chokehold(NtelSimulationEnvironment *env) {
 void test_context_bleed(NtelSimulationEnvironment *env) {
     printf("Running Test 8: Context Bleed (State Isolation via PID Mismatch)...\n");
 
-    /* Step 1: Process a command as "PID 1001" so the engine records an active_pid
-       and populates the shader cache with at least one entry. */
+    /* Step 1: Process a command to populate the shader cache with an entry. */
     uint8_t cmd_a[] = {0x10, 0x20, 0x30, 0x40};
     env->engine->active_pid = 0;   /* reset to uninitialised */
-    bool ok = ntel_engine_process_command(env->engine, cmd_a, sizeof(cmd_a));
-    if (!ok) {
+    if (!ntel_engine_process_command(env->engine, cmd_a, sizeof(cmd_a))) {
         printf("  [FAIL] Initial command processing failed (setup step)\n");
         record_test_failure(env);
         return;
     }
     uint32_t pid_after_first = env->engine->active_pid;
-    uint32_t hits_before = env->engine->cache_hits + env->engine->cache_misses;
-    uint32_t cache_hits_before = env->engine->cache_hits;
 
-    /* Step 2: Force the engine to believe a DIFFERENT PID is currently active,
-       simulating a context switch to another process.
-       The next call to ntel_engine_process_command must detect the mismatch and
-       trigger a scorch pass (ntel_engine_scorch_pass → cache flush). */
+    /* Save cmd_a's hash to verify cache was flushed */
+    uint64_t hash_a = ntel_shader_hash(cmd_a, sizeof(cmd_a));
+    uint32_t vtag_a = ntel_shader_verify_tag(cmd_a, sizeof(cmd_a));
+
+    /* Step 2: Simulate a context switch by forcing a foreign PID.
+       The next call must detect the mismatch and trigger a scorch pass. */
     env->engine->active_pid = pid_after_first + 9999;  /* simulate foreign PID */
-    uint32_t rejects_before = env->engine->collision_rejects;
-    uint32_t cache_size_before = env->engine->cache_hits + env->engine->cache_misses;
 
     uint8_t cmd_b[] = {0xAA, 0xBB, 0xCC, 0xDD};
-    ntel_engine_process_command(env->engine, cmd_b, sizeof(cmd_b));
+    if (!ntel_engine_process_command(env->engine, cmd_b, sizeof(cmd_b))) {
+        printf("  [FAIL] Second command processing failed\n");
+        record_test_failure(env);
+        return;
+    }
 
-    /* After the call the engine should have detected PID mismatch (active_pid was
-       foreign) and called ntel_engine_scorch_pass which resets the cache counters. */
-    (void)hits_before;
-    (void)cache_hits_before;
-    (void)rejects_before;
-    (void)cache_size_before;
-
-    /* Verify: the active_pid is now the "current" PID (getpid() on non-Apple),
-       not the old foreign PID we stuffed in. */
+    /* Verify: the active_pid is now the "current" PID, not the foreign PID. */
     if (env->engine->active_pid == pid_after_first + 9999) {
         printf("  [FAIL] Engine did not update active_pid after PID mismatch\n");
         record_test_failure(env);
-    } else {
-        printf("  [PASS] PID mismatch detected and scorch pass triggered. "
-               "active_pid updated to %u\n", env->engine->active_pid);
+        return;
     }
+
+    /* Verify: cmd_a's cache entry was flushed (lookup should miss). */
+    uint8_t *bytecode = NULL;
+    uint32_t size = 0;
+    uint32_t misses_before_lookup = env->engine->cache_misses;
+    bool cache_hit = ntel_shader_cache_lookup(env->engine, hash_a, vtag_a, sizeof(cmd_a), &bytecode, &size);
+    if (cache_hit) {
+        ntel_shader_cache_release_bytecode(bytecode, size);
+        printf("  [FAIL] Cache entry for cmd_a still present after scorch pass\n");
+        record_test_failure(env);
+        return;
+    }
+    uint32_t misses_after_lookup = env->engine->cache_misses;
+
+    /* Verify: cache_misses increased by exactly 1 (the lookup for cmd_a found nothing). */
+    if (misses_after_lookup != misses_before_lookup + 1) {
+        printf("  [FAIL] Unexpected miss count after flush+lookup (expected 1, got %u)\n",
+               misses_after_lookup - misses_before_lookup);
+        record_test_failure(env);
+        return;
+    }
+
+    printf("  [PASS] PID mismatch detected, scorch pass triggered, cache flushed. "
+           "active_pid updated to %u (was %u)\n",
+           env->engine->active_pid, pid_after_first + 9999);
 }
 
 // --- TEST 9: Shader Cache AOT ---
