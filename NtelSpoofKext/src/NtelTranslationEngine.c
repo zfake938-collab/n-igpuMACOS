@@ -12,6 +12,7 @@
 #define NTEL_ALLOC(s)        IOMalloc(s)
 #define NTEL_FREE(p, s)      IOFree((p), (s))
 #else
+#include <unistd.h>
 #define NTEL_CACHE_LOCK(e)   pthread_mutex_lock(&(e)->cache_lock)
 #define NTEL_CACHE_UNLOCK(e) pthread_mutex_unlock(&(e)->cache_lock)
 #define NTEL_ALLOC(s)        malloc(s)
@@ -218,13 +219,16 @@ void ntel_shader_cache_release_bytecode(uint8_t *bytecode, uint32_t size) {
 }
 
 static bool translate_air_to_gen12(const uint8_t *air_packet, uint32_t air_len,
-                                    uint8_t **out_gen12, uint32_t *out_gen12_len) {
+                                     uint8_t **out_gen12, uint32_t *out_gen12_len) {
     if (!air_packet || air_len == 0 || !out_gen12 || !out_gen12_len) return false;
     if (air_len > (NTEL_MAX_SHADER_BYTECODE / 2)) return false;
 
     uint32_t gen12_size = air_len * 2;
     uint8_t *gen12 = (uint8_t *)NTEL_ALLOC(gen12_size);
     if (!gen12) return false;
+
+    /* STUB: Phase 2 — XOR placeholder only, not valid Gen12 EU bytecode.
+       Real implementation requires AIR parsing and opcode LUT transmutation. */
 
     for (uint32_t i = 0; i < air_len; i++) {
         gen12[i * 2] = air_packet[i] ^ 0xA5;
@@ -254,7 +258,13 @@ bool ntel_engine_process_command(NtelTranslationEngine *engine, const uint8_t *a
         return false;
     }
 
-    uint32_t current_pid = 1234;
+    uint32_t current_pid = 0;
+#ifdef __APPLE__
+    /* TODO: Use proc_selfpid() or similar to get actual PID in kernel context */
+    current_pid = 1234;  /* STUB: Hardcoded placeholder for Phase 2 */
+#else
+    current_pid = (uint32_t)getpid();
+#endif
 
     if (engine->active_pid != 0 && engine->active_pid != current_pid) {
         NTEL_LOG_HOT(NTEL_COMP_ENGINE, NTEL_EVT_PID_MISMATCH,

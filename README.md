@@ -17,7 +17,9 @@
 
 - **Target GPU**: Intel Core i5/i7-1235U (Alder Lake-U, Iris Xe Graphics)
 - **Spoof Target**: Intel Ice Lake Gen11 iGPU  <!-- device ID 0x8A52, platform 0x5A08 -->
-- **Status**: Experimental. Core spoofing is implemented; translation engine and firmware upload require separate development phase.
+- **Status**: Experimental. Phase 1 (PCIe identity spoofing) is implemented; Phase 2 (translation engine and firmware upload) requires separate development.
+
+> **Note**: The platform ID `0x00005A08` differs from common Ice Lake values (`0x8A520000` for 28W, `0x8A510000` for 15W). Hardware validation needed to confirm correct framebuffer binding.
 
 ## 🚀 Quick Start Guide (For Users)
 
@@ -51,7 +53,7 @@ Inject the following into your `DeviceProperties` to spoof the device as an Inte
 - **Path**: `PciRoot(0x0)/Pci(0x2,0x0)`
 - **Properties**:
   - `device-id`: `<data>528A0000</data>`  <!-- Ice Lake GT2: 0x8A52 -->
-  - `AAPL,ig-platform-id`: `<data>AABaig==</data>`  <!-- 0x5A08 -->
+  - `AAPL,ig-platform-id`: `<data>CFoAAA==</data>`  <!-- 0x00005A08 -->
 
 > [!IMPORTANT]
 > Use EITHER OpenCore DeviceProperties OR NtelSpoofKext — NOT both.
@@ -107,4 +109,4 @@ For detailed build instructions, debugging protocols, and contribution guideline
 
 ## ⚖️ License
 
-it not right now This project is released under the MIT License. See the LICENSE file for details.
+This project is released under the MIT License. See the LICENSE file for details.
