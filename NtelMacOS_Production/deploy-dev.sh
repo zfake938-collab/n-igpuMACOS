@@ -2,8 +2,12 @@
 # ==============================================================================
 # NtelMacOS Deployment Orchestrator (Target: Intel i7/i5-1235U)
 # ==============================================================================
+# WARNING: Read HARDWARE_TESTING.md before deploying!
+# Ensure recovery media is ready and amfi=0x80 is set in NVRAM.
+# ==============================================================================
 
 echo "[NtelMacOS] Initializing Bare-Metal Deployment Sequence..."
+echo "[NtelMacOS] See HARDWARE_TESTING.md for safety procedures and rollback plan."
 
 # PRE-FLIGHT CHECK: Ensure the user has disabled AMFI in Recovery OS
 if nvram boot-args | grep -q "amfi=0x80"; then
@@ -39,6 +43,8 @@ fi
 
 echo "[NtelMacOS] Deployment staged successfully."
 echo "[NtelMacOS] To verify spoofing worked, run on target:"
-echo "          ioreg -lw0 -p IOService | grep -i \"AAPL,ig-platform-id\""
+echo "          ioreg -lw0 -p IOService -r -c IOPCIDevice | grep -A5 -B5 \"0x8a52\|8A52\""
+echo "          kextstat | grep -i ntel"
 echo ""
 echo "[NtelMacOS] Note: The kext/dext binaries must be built first before loading."
+echo "[NtelMacOS] For detailed hardware testing, see HARDWARE_TESTING.md"

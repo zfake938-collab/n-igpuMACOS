@@ -31,13 +31,18 @@ Developing `.dext` (DriverKit) extensions is strictly controlled by Apple.
 Before testing on real hardware, always verify your changes using the deterministic simulation environment:
 ```bash
 cd NtelSpoofKext
-make && ./build/ntel_sim --all
+make test           # Run regression tests with debug logging
+make simulation     # Run tests + stress tests
 ```
 
 ### 2. Building the Kext & Dext (Target Deployment)
-The kext and dext require kernel development headers (KDK) and Xcode. The project currently lacks `.xcodeproj` files — the kext/dext build workflow needs to be implemented.
-* **Current state**: The simulation suite in `NtelSpoofKext/` is the only buildable component.
-* **Future work**: Add Xcode projects or kernel build system for `NtelMacOS.kext` and `NtelShaderChannel.dext`.
+The kext and dext require kernel development headers (KDK) and Xcode. The project currently lacks `.xcodeproj` files.
+
+* **Simulation suite**: Fully buildable and tested (`make test` in NtelSpoofKext/)
+* **Kext binary**: Must be built with KDK/Xcode before deployment (check `NtelMacOS.kext/Contents/MacOS/`)
+* **Future work**: Add Xcode projects or kernel build system for `NtelShaderChannel.dext`
+
+See **HARDWARE_TESTING.md** for deployment instructions and safety procedures.
 
 ---
 
@@ -45,7 +50,30 @@ The kext and dext require kernel development headers (KDK) and Xcode. The projec
 
 ### 1. Local Logic Debugging
 Use the internal debug macros to increase logging granularity without impacting the performance of the real-time translation engine.
-* Edit `NtelSharedRing.h` to adjust `NTEL_LOG_LEVEL`.
+* Build with `make DEBUG=2` to enable hot-path logging (`NTEL_LOG_HOT` macros)
+
+### 2. Single-Machine Panic Debugging
+For catching kernel panics on the same machine without a second debug host:
+
+1. **Boot Arguments** (add to `NVRAM -> boot-args`):
+   ```text
+   amfi=0x80 ntel_debug=4 keepsyms=1 debug=0x100
+   ```
+
+2. **Build Debug Daemon**:
+   ```bash
+   cd NtelSpoofKext
+   make DEBUG=2 daemon
+   ```
+
+3. **Run Before Deployment**:
+   ```bash
+   sudo ./build/ntel_debug_daemon > ~/ntel_crash_log.txt &
+   cd ../NtelMacOS_Production
+   sudo ./deploy-dev.sh
+   ```
+
+The daemon will stream ring buffer state to `~/ntel_crash_log.txt` until the panic occurs.
 
 ### 2. Kernel-Level Debugging (Two-Machine Setup)
 For debugging kernel panics or race conditions in the `NtelSpoofService`, a two-machine setup is highly recommended:

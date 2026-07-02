@@ -36,11 +36,34 @@ typedef struct {
     bool huc_loaded;
     NtelFirmwareBlob guc_blob;
     NtelFirmwareBlob huc_blob;
+    // MMIO registers for hardware upload
+    void *mmio_base;
+    uint32_t mmio_size;
 } NtelFirmwareContext;
+
+// MMIO register offsets for Intel GuC/HuC (common values for Xe-LP)
+#define INTEL_GUC_STATUS_REG_OFFSET     0x4000
+#define INTEL_HUC_STATUS_REG_OFFSET     0x4400
+#define INTEL_GUC_LOAD_REG_OFFSET       0x4800
+#define INTEL_Doorbell_REG_OFFSET       0x4C00
+#define INTEL_GUC_LOAD_COMPLETE_TIMEOUT 1000000
 
 NtelFirmwareResult ntel_fw_inject_all(NtelFirmwareContext *ctx);
 NtelFirmwareResult ntel_fw_load_blob(NtelFirmwareContext *ctx, NtelFirmwareType type, const char *path);
 bool ntel_fw_verify_status(NtelFirmwareContext *ctx);
 void ntel_fw_cleanup(NtelFirmwareContext *ctx);
+
+// Phase 2: Hardware MMIO upload functions (macOS only)
+#ifdef __APPLE__
+#include <IOKit/pci/IOPCIDevice.h>
+NtelFirmwareResult ntel_fw_map_mmio(NtelFirmwareContext *ctx, IOPCIDevice *pci_device);
+NtelFirmwareResult ntel_fw_upload_guc_to_hw(NtelFirmwareContext *ctx);
+NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx);
+#else
+// Usermode stubs - declarations only
+NtelFirmwareResult ntel_fw_map_mmio(NtelFirmwareContext *ctx, void *unused);
+NtelFirmwareResult ntel_fw_upload_guc_to_hw(NtelFirmwareContext *ctx);
+NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx);
+#endif
 
 #endif // NTEL_FIRMWARE_INJECTOR_H

@@ -9,6 +9,7 @@
 #include <sys/uio.h>
 #include <kern/debug.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/pci/IOPCIDevice.h>
 #endif
 
 static NtelFirmwareBlob *get_blob_for_type(NtelFirmwareContext *ctx, NtelFirmwareType type) {
@@ -221,6 +222,123 @@ void ntel_fw_cleanup(NtelFirmwareContext *ctx) {
         ctx->huc_blob.loaded = false;
     }
 
+    if (ctx->mmio_base) {
+#ifdef __APPLE__
+        if (ctx->mmio_size > 0) {
+            IOFreeContiguous(ctx->mmio_base, ctx->mmio_size);
+        }
+#else
+        // Usermode simulation - no-op
+#endif
+        ctx->mmio_base = NULL;
+        ctx->mmio_size = 0;
+    }
+
     ctx->guc_loaded = false;
     ctx->huc_loaded = false;
 }
+
+#ifdef __APPLE__
+NtelFirmwareResult ntel_fw_map_mmio(NtelFirmwareContext *ctx, IOPCIDevice *pci_device) {
+    if (!ctx || !pci_device) return NTEL_FW_ERR_NOT_FOUND;
+    
+    // Map the GPU's MMIO registers
+    // Intel VGA/MMIO base offset varies by device - typically 0x4000+
+    ctx->mmio_size = 0x10000; // 64KB MMIO space
+    ctx->mmio_base = IOMallocContiguous(ctx->mmio_size, 4096, NULL);
+    if (!ctx->mmio_base) {
+        printf("[FW] Failed to allocate MMIO mapping space\n");
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+    
+    // Map physical registers - in real implementation would use IOPCIDevice::mapMemory
+    // This is a placeholder for the MMIO mapping logic
+    return NTEL_FW_SUCCESS;
+}
+
+NtelFirmwareResult ntel_fw_upload_guc_to_hw(NtelFirmwareContext *ctx) {
+    if (!ctx || !ctx->mmio_base || !ctx->guc_blob.loaded) {
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+    
+    uint8_t *mmio = (uint8_t *)ctx->mmio_base;
+    uint8_t *guc_data = ctx->guc_blob.data;
+    uint32_t guc_size = ctx->guc_blob.size;
+    
+    // Step 1: Disable GuC
+    *(volatile uint32_t *)(mmio + INTEL_GUC_STATUS_REG_OFFSET) = 0x00000000;
+    
+    // Step 2: Write GuC blob to loader register in chunks
+    uint32_t *load_reg = (uint32_t *)(mmio + INTEL_GUC_LOAD_REG_OFFSET);
+    for (uint32_t i = 0; i < guc_size; i += 4) {
+        *load_reg = *(uint32_t *)(guc_data + i);
+    }
+    
+    // Step 3: Trigger upload and wait for completion
+    *(volatile uint32_t *)(mmio + INTEL_Doorbell_REG_OFFSET) = 0x00000001;
+    
+    // Poll for completion with timeout
+    for (uint32_t i = 0; i < INTEL_GUC_LOAD_COMPLETE_TIMEOUT; i++) {
+        if (*(volatile uint32_t *)(mmio + INTEL_GUC_STATUS_REG_OFFSET) & 0x00000001) {
+            printf("[FW] GuC upload completed\n");
+            return NTEL_FW_SUCCESS;
+        }
+    }
+    
+    printf("[FW] GuC upload timeout\n");
+    return NTEL_FW_ERR_HARDWARE_REJECT;
+}
+
+NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx) {
+    if (!ctx || !ctx->mmio_base || !ctx->huc_blob.loaded) {
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+    
+    uint8_t *mmio = (uint8_t *)ctx->mmio_base;
+    uint8_t *huc_data = ctx->huc_blob.data;
+    uint32_t huc_size = ctx->huc_blob.size;
+    
+    // Step 1: Disable HuC
+    *(volatile uint32_t *)(mmio + INTEL_HUC_STATUS_REG_OFFSET) = 0x00000000;
+    
+    // Step 2: Write HuC blob to loader register in chunks
+    uint32_t *load_reg = (uint32_t *)(mmio + INTEL_GUC_LOAD_REG_OFFSET + 0x1000);
+    for (uint32_t i = 0; i < huc_size; i += 4) {
+        *load_reg = *(uint32_t *)(huc_data + i);
+    }
+    
+    // Step 3: Trigger upload and wait for completion
+    *(volatile uint32_t *)(mmio + INTEL_Doorbell_REG_OFFSET) = 0x00000002;
+    
+    // Poll for completion with timeout
+    for (uint32_t i = 0; i < INTEL_GUC_LOAD_COMPLETE_TIMEOUT; i++) {
+        if (*(volatile uint32_t *)(mmio + INTEL_HUC_STATUS_REG_OFFSET) & 0x00000001) {
+            printf("[FW] HuC upload completed\n");
+            return NTEL_FW_SUCCESS;
+        }
+    }
+    
+    printf("[FW] HuC upload timeout\n");
+    return NTEL_FW_ERR_HARDWARE_REJECT;
+}
+#else
+// Usermode stubs for simulation
+NtelFirmwareResult ntel_fw_map_mmio(NtelFirmwareContext *ctx, void *unused) {
+    (void)unused;
+    ctx->mmio_base = NULL;
+    ctx->mmio_size = 0;
+    return NTEL_FW_SUCCESS;
+}
+
+NtelFirmwareResult ntel_fw_upload_guc_to_hw(NtelFirmwareContext *ctx) {
+    (void)ctx;
+    printf("[FW] GuC MMIO upload (usermode stub - no hardware access)\n");
+    return NTEL_FW_SUCCESS;
+}
+
+NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx) {
+    (void)ctx;
+    printf("[FW] HuC MMIO upload (usermode stub - no hardware access)\n");
+    return NTEL_FW_SUCCESS;
+}
+#endif

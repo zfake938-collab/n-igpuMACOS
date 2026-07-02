@@ -77,6 +77,39 @@ Inject the following into your `DeviceProperties` to spoof the device as an Inte
 | **Immediate Kernel Panic on boot**       | AMFI or SIP is still active.   | Verify `boot-args` in NVRAM and ensure `amfi=0x80` is present.                                          |
 | **Kext fails to load**                   | Binary not built or permissions. | Build the kext with KDK/Xcode, then run `chmod +x deploy-dev.sh`.                                       |
 
+### 🐞 Debugging & Crash Recovery
+
+To catch kernel panics and collect crash logs for Phase 2 development:
+
+**1. Boot Arguments (add to OpenCore config.plist):**
+```
+amfi=0x80 ntel_debug=4 keepsyms=1 debug=0x100
+```
+- `ntel_debug=4`: Enables verbose logging for the `com.ntel` subsystem
+- `keepsyms=1 debug=0x100`: Preserves kernel symbols and enables panic logging
+
+**2. Build with Debug Logging:**
+```bash
+# Build simulation with hot-path logging enabled
+make DEBUG=2
+
+# Build debug daemon
+make DEBUG=2 daemon
+```
+
+**3. Debug Daemon Deployment:**
+```bash
+# Start daemon before deploying kext
+cd NtelSpoofKext
+sudo ./build/ntel_debug_daemon > ~/ntel_crash_log.txt &
+
+# Deploy kext
+cd ../NtelMacOS_Production
+sudo ./deploy-dev.sh
+```
+
+Panic logs will be written to `~/ntel_crash_log.txt` while the daemon runs.
+
 ---
 
 ## 🧪 How It Works

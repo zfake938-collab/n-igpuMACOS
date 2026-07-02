@@ -8,24 +8,18 @@
 #include <pthread.h>
 #endif
 
-/**
- * @brief NtelSharedRingHeader
- * Enforces 64-byte alignment and VA-invariance as per EVP Section 2.
- * Indices are stored as raw byte-based offsets from the header, 
- * not absolute pointers, to allow mapping at different Virtual Addresses.
- */
-struct NtelSharedRingHeader {
+typedef struct {
     _Atomic(uint32_t) writeIdx;  // Atomic producer offset (byte-based)
     _Atomic(uint32_t) readIdx;   // Consumer offset (byte-based)
     uint32_t capacityDW;         // Total ring capacity in Double Words (informational)
     uint32_t reserved[13];       // Padding for 64-byte alignment
-};
+} NtelSharedRingHeader;
 
 #define NTEL_RING_ALIGNMENT 64
 #define NTEL_RING_MAX_CAPACITY (8 * 1024 * 1024) // 8MB as per EVP
 
 typedef struct {
-    struct NtelSharedRingHeader *header;
+    NtelSharedRingHeader *header;
     uint8_t *buffer_base;
     uint32_t capacity_bytes;
 #ifdef __APPLE__

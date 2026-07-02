@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <stdatomic.h>
 
 static void record_test_failure(NtelSimulationEnvironment *env) {
     if (env) env->test_failures++;
@@ -136,8 +137,8 @@ void test_asynchronous_watchdog(NtelSimulationEnvironment *env) {
 void test_ring_wraparound(NtelSimulationEnvironment *env) {
     printf("Running Test 4: Ring Buffer Wraparound...\n");
     uint32_t cap = env->ring->capacity_bytes;
-    env->ring->header->writeIdx = cap - 4;
-    env->ring->header->readIdx = cap - 4;
+    atomic_store_explicit(&env->ring->header->writeIdx, cap - 4, memory_order_relaxed);
+    atomic_store_explicit(&env->ring->header->readIdx, cap - 4, memory_order_relaxed);
 
     uint32_t payload[] = {0xDEADBEEF, 0xCAFEBABE};
     ntel_ring_try_write(env->ring, (uint8_t*)payload, 8);
@@ -491,15 +492,56 @@ void test_stress_cache_concurrent(NtelSimulationEnvironment *env, uint32_t num_t
 // --- E2E PIPELINE ---
 void test_e2e_pipeline(NtelSimulationEnvironment *env) {
     printf("Running FINAL TEST: End-to-End Pipeline Simulation...\n");
-    uint8_t air_command[] = {0x01, 0x02, 0x03, 0x04};
+    
+    // Test: Simple ALU shader - MOV + FADD + FMUL
+    // AIR opcode 0x00 = MOV, 0x03 = FADD, 0x04 = FMUL
+    uint8_t air_shader[] = {
+        0x00, 0x10, 0x20,           // MOV r10, r20 (3 bytes)
+        0x03, 0x30, 0x40, 0x50,     // FADD r30, r40, r50 (4 bytes)
+        0x04, 0x60, 0x70, 0x80      // FMUL r60, r70, r80 (4 bytes)
+    };
 
-    bool engine_res = ntel_engine_process_command(env->engine, air_command, 4);
+    bool engine_res = ntel_engine_process_command(env->engine, air_shader, sizeof(air_shader));
     if (engine_res) {
         printf("  [PASS] Command parsed, translated, and submitted to ring.\n");
     } else {
         printf("  [FAIL] E2E Pipeline breakdown.\n");
         record_test_failure(env);
     }
+}
+
+// --- AIR→Gen12 Translation Validation Test ---
+void test_translation_output(NtelSimulationEnvironment *env) {
+    printf("Running Test: AIR→Gen12 Translation Output Validation...\n");
+    
+    // Known AIR pattern for MOV instruction (0x00)
+    uint8_t air_mov[] = { 0x00, 0x01, 0x02 };  // dest=0x01, src=0x02
+    
+    // We can't directly access translate_air_to_gen12, so test via process_command
+    // and verify the ring received something
+    drain_ring(env->ring);
+    
+    bool result = ntel_engine_process_command(env->engine, air_mov, sizeof(air_mov));
+    if (!result) {
+        printf("  [FAIL] Translation failed\n");
+        record_test_failure(env);
+        return;
+    }
+    
+    // Read back and check we got data
+    uint8_t read_buf[64];
+    uint32_t bytes_read = 0;
+    if (ntel_ring_try_read(env->ring, read_buf, sizeof(read_buf), &bytes_read)) {
+        if (bytes_read >= 32 + 16) {  // At least IDD + one instruction
+            printf("  [PASS] Translation produced %u bytes (IDD + instructions)\n", bytes_read);
+        } else {
+            printf("  [FAIL] Translation output too small: %u bytes\n", bytes_read);
+            record_test_failure(env);
+        }
+    }
+    
+    // Cleanup for next test
+    drain_ring(env->ring);
 }
 
 // --- TEST: Debug Ring Drain ---
@@ -616,6 +658,7 @@ int ntel_sim_run(int argc, char *argv[]) {
     }
 
     test_e2e_pipeline(env);
+    test_translation_output(env);
     test_debug_ring_drain(env);
     printf("--- REGRESSION SUITE COMPLETE: %u failure(s) ---\n\n", env->test_failures);
 

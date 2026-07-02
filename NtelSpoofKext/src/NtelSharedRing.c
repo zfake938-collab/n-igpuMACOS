@@ -17,9 +17,38 @@
 #define NTEL_RING_READY(c)     ((c)->lock_initialized)
 #endif
 
+// Cache coherency for non-snooping GPU paths
+// These enforce the contract: Host Write -> Eviction -> Barrier -> Doorbell
+#ifdef __APPLE__
+#include <mach/mach_time.h>
+static inline void ntel_cache_evict(const void *addr, uint32_t len) {
+    // macOS kernel: use processor cache control via __builtin_ia32_clflush
+    const uint8_t *ptr = (const uint8_t *)addr;
+    const uint8_t *end = ptr + len;
+    for (; ptr < end; ptr += 64) {
+        __builtin_ia32_clflush(ptr);
+    }
+}
+static inline void ntel_cache_barrier(void) {
+    __builtin_ia32_mfence();
+}
+#else
+#include <immintrin.h>
+static inline void ntel_cache_evict(const void *addr, uint32_t len) {
+    const uint8_t *ptr = (const uint8_t *)addr;
+    const uint8_t *end = ptr + len;
+    for (; ptr < end; ptr += 64) {
+        _mm_clflush(ptr);
+    }
+}
+static inline void ntel_cache_barrier(void) {
+    _mm_mfence();
+}
+#endif
+
 bool ntel_ring_init(NtelRingContext *ctx, void *shared_mem, uint32_t size) {
     if (!ctx || !shared_mem) return false;
-    const uint32_t header_size = (uint32_t)sizeof(struct NtelSharedRingHeader);
+    const uint32_t header_size = (uint32_t)sizeof(NtelSharedRingHeader);
     if (size < header_size || size > NTEL_RING_MAX_CAPACITY) {
         return false;
     }
@@ -35,7 +64,7 @@ bool ntel_ring_init(NtelRingContext *ctx, void *shared_mem, uint32_t size) {
     ctx->lock_initialized = true;
 #endif
 
-    ctx->header = (struct NtelSharedRingHeader *)shared_mem;
+    ctx->header = (NtelSharedRingHeader *)shared_mem;
     ctx->buffer_base = (uint8_t *)shared_mem + header_size;
     ctx->capacity_bytes = size - header_size;
 
@@ -80,6 +109,16 @@ bool ntel_ring_try_write(NtelRingContext *ctx, const uint8_t *data, uint32_t len
         memcpy(ctx->buffer_base + current_w, data, space_to_end);
         memcpy(ctx->buffer_base, data + space_to_end, len - space_to_end);
     }
+
+    // Step 1: Evict - Flush the modified cache lines for GPU visibility
+    ntel_cache_evict(ctx->buffer_base + current_w, 
+                    len <= space_to_end ? len : space_to_end);
+    if (len > space_to_end) {
+        ntel_cache_evict(ctx->buffer_base, len - space_to_end);
+    }
+
+    // Step 2: Barrier - Prevent reordering before doorbell
+    ntel_cache_barrier();
 
     /* RELEASE barrier: all data stores must be globally visible
        before the write index update is observed by the reader. */

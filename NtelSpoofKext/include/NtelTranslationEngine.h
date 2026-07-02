@@ -12,6 +12,39 @@
 #define NTEL_SHADER_CACHE_SIZE 256
 #define NTEL_MAX_SHADER_BYTECODE (64 * 1024)
 
+// Cycle detection states for 3-color DFS deadlock defense
+typedef enum {
+    NTEL_CYCLE_WHITE = 0,
+    NTEL_CYCLE_GRAY  = 1,
+    NTEL_CYCLE_BLACK = 2
+} NtelCycleState;
+
+// Intel Gen12 EU Instruction Format (4 DWORDS = 16 bytes)
+typedef struct {
+    uint32_t dword0;  // Opcode, execution size, access mode
+    uint32_t dword1;  // Destination register
+    uint32_t dword2;  // Source 0 register
+    uint32_t dword3;  // Source 1 / immediate / control
+} NtelGen12Instruction;
+
+// AIR opcode to Gen12 translation function
+typedef NtelGen12Instruction (*NtelOpcodeTranslator)(const uint8_t *air_payload, uint32_t *offset);
+
+// Instruction categories for LUT organization
+typedef enum {
+    NTEL_AIR_ALU     = 0x00,  // Arithmetic Logic Unit
+    NTEL_AIR_FLOW    = 0x10,  // Control Flow
+    NTEL_AIR_MEM     = 0x20,  // Memory/Sampler access
+    NTEL_AIR_BARRIER = 0x30,  // Thread synchronization
+    NTEL_AIR_SPECIAL = 0x40   // Special/converter opcodes
+} NtelAirCategory;
+
+typedef struct {
+    const char *mnemonic;
+    NtelOpcodeTranslator translate_fn;
+    uint8_t payload_size;
+} NtelOpcodeMap;
+
 typedef struct {
     uint64_t kernel_gpu_va;
     uint32_t binding_table_ptr;
@@ -33,14 +66,13 @@ typedef struct {
 
 typedef struct {
     NtelRingContext *ring;
-    void *isa_mapping_table;
+    NtelOpcodeMap isa_mapping_table[256];
     uint32_t active_pid;
     NtelShaderCacheEntry shader_cache[NTEL_SHADER_CACHE_SIZE];
     uint32_t cache_hits;
     uint32_t cache_misses;
     uint32_t collision_rejects;
 #ifdef __APPLE__
-    /* In kernel space, use IOLock or IORecursiveLock */
     void *cache_lock;
 #else
     pthread_mutex_t cache_lock;

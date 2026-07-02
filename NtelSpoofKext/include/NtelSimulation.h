@@ -50,6 +50,7 @@ void test_stress_cache_concurrent(NtelSimulationEnvironment *env, uint32_t num_t
 
 // End-to-End
 void test_e2e_pipeline(NtelSimulationEnvironment *env);
+void test_translation_output(NtelSimulationEnvironment *env);
 
 // CLI runner
 int ntel_sim_run(int argc, char *argv[]);
