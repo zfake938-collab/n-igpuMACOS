@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdatomic.h>
-#ifndef __APPLE__
+#if !defined(__APPLE__) || defined(NTEL_USERMODE)
 #include <pthread.h>
 #endif
 
@@ -22,7 +22,7 @@ typedef struct {
     NtelSharedRingHeader *header;
     uint8_t *buffer_base;
     uint32_t capacity_bytes;
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
     void *lock;
 #else
     pthread_mutex_t lock;

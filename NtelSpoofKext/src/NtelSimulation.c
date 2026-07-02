@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <stdatomic.h>
+#include <sys/stat.h>
 
 static void record_test_failure(NtelSimulationEnvironment *env) {
     if (env) env->test_failures++;
@@ -544,6 +545,58 @@ void test_translation_output(NtelSimulationEnvironment *env) {
     drain_ring(env->ring);
 }
 
+void test_firmware_injection_sim(NtelSimulationEnvironment *env) {
+    (void)env;
+    printf("Running Test: Firmware Injection Path (Usermode MMIO simulation)...\n");
+
+    mkdir("firmware", 0755);
+    mkdir("firmware/bin", 0755);
+
+    const char *guc_path = "firmware/bin/guc_xe_lp.raw";
+    const char *huc_path = "firmware/bin/huc_xe_lp.raw";
+    const uint8_t guc_data[16] = {
+        0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
+        0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0, 0x00
+    };
+    const uint8_t huc_data[16] = {
+        0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88,
+        0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00
+    };
+
+    FILE *fp = fopen(guc_path, "wb");
+    if (!fp) {
+        printf("  [FAIL] Unable to create %s\n", guc_path);
+        record_test_failure(env);
+        return;
+    }
+    fwrite(guc_data, 1, sizeof(guc_data), fp);
+    fclose(fp);
+
+    fp = fopen(huc_path, "wb");
+    if (!fp) {
+        printf("  [FAIL] Unable to create %s\n", huc_path);
+        record_test_failure(env);
+        return;
+    }
+    fwrite(huc_data, 1, sizeof(huc_data), fp);
+    fclose(fp);
+
+    NtelFirmwareContext ctx = {0};
+    NtelFirmwareResult res = ntel_fw_inject_all(&ctx);
+    ntel_fw_cleanup(&ctx);
+
+    unlink(guc_path);
+    unlink(huc_path);
+
+    if (res != NTEL_FW_SUCCESS) {
+        printf("  [FAIL] Firmware injection simulation failed: %d\n", res);
+        record_test_failure(env);
+        return;
+    }
+
+    printf("  [PASS] Firmware injection simulated successfully.\n");
+}
+
 // --- TEST: Debug Ring Drain ---
 void test_debug_ring_drain(NtelSimulationEnvironment *env) {
     printf("Running Test: Debug Ring Drain & Read...\n");
@@ -659,6 +712,7 @@ int ntel_sim_run(int argc, char *argv[]) {
 
     test_e2e_pipeline(env);
     test_translation_output(env);
+    test_firmware_injection_sim(env);
     test_debug_ring_drain(env);
     printf("--- REGRESSION SUITE COMPLETE: %u failure(s) ---\n\n", env->test_failures);
 

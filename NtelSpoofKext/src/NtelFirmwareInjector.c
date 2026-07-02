@@ -3,13 +3,14 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
 #include <sys/vnode.h>
 #include <sys/fcntl.h>
 #include <sys/uio.h>
 #include <kern/debug.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/pci/IOPCIDevice.h>
+#include <IOKit/IOMemoryMap.h>
 #endif
 
 static NtelFirmwareBlob *get_blob_for_type(NtelFirmwareContext *ctx, NtelFirmwareType type) {
@@ -28,7 +29,180 @@ static uint32_t simple_checksum(const uint8_t *data, uint32_t size) {
     return sum;
 }
 
-#ifdef __APPLE__
+#define NTEL_ELF_IDENT0 0x7F
+#define NTEL_ELF_IDENT1 'E'
+#define NTEL_ELF_IDENT2 'L'
+#define NTEL_ELF_IDENT3 'F'
+#define NTEL_ELF_CLASS_32 1
+#define NTEL_ELF_CLASS_64 2
+#define NTEL_ELF_DATA_LSB 1
+#define NTEL_ELF_PT_LOAD 1
+
+typedef struct __attribute__((packed)) {
+    uint8_t  e_ident[16];
+    uint16_t e_type;
+    uint16_t e_machine;
+    uint32_t e_version;
+    uint64_t e_entry;
+    uint64_t e_phoff;
+    uint64_t e_shoff;
+    uint32_t e_flags;
+    uint16_t e_ehsize;
+    uint16_t e_phentsize;
+    uint16_t e_phnum;
+    uint16_t e_shentsize;
+    uint16_t e_shnum;
+    uint16_t e_shstrndx;
+} Elf64_Ehdr;
+
+typedef struct __attribute__((packed)) {
+    uint32_t p_type;
+    uint32_t p_flags;
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+    uint64_t p_align;
+} Elf64_Phdr;
+
+typedef struct __attribute__((packed)) {
+    uint8_t  e_ident[16];
+    uint16_t e_type;
+    uint16_t e_machine;
+    uint32_t e_version;
+    uint32_t e_entry;
+    uint32_t e_phoff;
+    uint32_t e_shoff;
+    uint32_t e_flags;
+    uint16_t e_ehsize;
+    uint16_t e_phentsize;
+    uint16_t e_phnum;
+    uint16_t e_shentsize;
+    uint16_t e_shnum;
+    uint16_t e_shstrndx;
+} Elf32_Ehdr;
+
+typedef struct __attribute__((packed)) {
+    uint32_t p_type;
+    uint32_t p_offset;
+    uint32_t p_vaddr;
+    uint32_t p_paddr;
+    uint32_t p_filesz;
+    uint32_t p_memsz;
+    uint32_t p_flags;
+    uint32_t p_align;
+} Elf32_Phdr;
+
+static bool ntel_fw_is_elf(const uint8_t *data, uint32_t size) {
+    return size >= 4 &&
+           data[0] == NTEL_ELF_IDENT0 &&
+           data[1] == NTEL_ELF_IDENT1 &&
+           data[2] == NTEL_ELF_IDENT2 &&
+           data[3] == NTEL_ELF_IDENT3;
+}
+
+static NtelFirmwareResult ntel_fw_extract_elf_load_segments(const uint8_t *data,
+                                                            uint32_t size,
+                                                            NtelFirmwareBlob *blob) {
+    if (!data || size < 16 || !blob) {
+        return NTEL_FW_ERR_INVALID_SIGNATURE;
+    }
+
+    uint8_t klass = data[4];
+    uint8_t encoding = data[5];
+    if (encoding != NTEL_ELF_DATA_LSB) {
+        return NTEL_FW_ERR_INVALID_SIGNATURE;
+    }
+
+    uint64_t total_bytes = 0;
+    if (klass == NTEL_ELF_CLASS_64) {
+        if (size < sizeof(Elf64_Ehdr)) return NTEL_FW_ERR_INVALID_SIGNATURE;
+        Elf64_Ehdr ehdr;
+        memcpy(&ehdr, data, sizeof(ehdr));
+
+        uint64_t ph_table_end = ehdr.e_phoff + ((uint64_t)ehdr.e_phnum * ehdr.e_phentsize);
+        if (ph_table_end > size || ehdr.e_phentsize != sizeof(Elf64_Phdr)) {
+            return NTEL_FW_ERR_INVALID_SIGNATURE;
+        }
+
+        for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
+            const uint8_t *ph_ptr = data + ehdr.e_phoff + ((uint64_t)i * ehdr.e_phentsize);
+            Elf64_Phdr phdr;
+            memcpy(&phdr, ph_ptr, sizeof(phdr));
+            if (phdr.p_type != NTEL_ELF_PT_LOAD || phdr.p_filesz == 0) continue;
+            if (phdr.p_offset + phdr.p_filesz > size) return NTEL_FW_ERR_INVALID_SIGNATURE;
+            total_bytes += phdr.p_filesz;
+            if (total_bytes > NTEL_FW_MAX_BLOB_SIZE) return NTEL_FW_ERR_TOO_LARGE;
+        }
+
+        if (total_bytes == 0) return NTEL_FW_ERR_INVALID_SIGNATURE;
+
+        uint8_t *raw = (uint8_t *)malloc((size_t)total_bytes);
+        if (!raw) return NTEL_FW_ERR_LOAD_FAILED;
+
+        uint64_t write_at = 0;
+        for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
+            const uint8_t *ph_ptr = data + ehdr.e_phoff + ((uint64_t)i * ehdr.e_phentsize);
+            Elf64_Phdr phdr;
+            memcpy(&phdr, ph_ptr, sizeof(phdr));
+            if (phdr.p_type != NTEL_ELF_PT_LOAD || phdr.p_filesz == 0) continue;
+            memcpy(raw + write_at, data + phdr.p_offset, phdr.p_filesz);
+            write_at += phdr.p_filesz;
+        }
+
+        blob->data = raw;
+        blob->size = (uint32_t)total_bytes;
+        blob->loaded = true;
+        return NTEL_FW_SUCCESS;
+    }
+
+    if (klass == NTEL_ELF_CLASS_32) {
+        if (size < sizeof(Elf32_Ehdr)) return NTEL_FW_ERR_INVALID_SIGNATURE;
+        Elf32_Ehdr ehdr;
+        memcpy(&ehdr, data, sizeof(ehdr));
+
+        uint32_t ph_table_end = ehdr.e_phoff + ((uint32_t)ehdr.e_phnum * ehdr.e_phentsize);
+        if (ph_table_end > size || ehdr.e_phentsize != sizeof(Elf32_Phdr)) {
+            return NTEL_FW_ERR_INVALID_SIGNATURE;
+        }
+
+        for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
+            const uint8_t *ph_ptr = data + ehdr.e_phoff + ((uint32_t)i * ehdr.e_phentsize);
+            Elf32_Phdr phdr;
+            memcpy(&phdr, ph_ptr, sizeof(phdr));
+            if (phdr.p_type != NTEL_ELF_PT_LOAD || phdr.p_filesz == 0) continue;
+            if (phdr.p_offset + phdr.p_filesz > size) return NTEL_FW_ERR_INVALID_SIGNATURE;
+            total_bytes += phdr.p_filesz;
+            if (total_bytes > NTEL_FW_MAX_BLOB_SIZE) return NTEL_FW_ERR_TOO_LARGE;
+        }
+
+        if (total_bytes == 0) return NTEL_FW_ERR_INVALID_SIGNATURE;
+
+        uint8_t *raw = (uint8_t *)malloc((size_t)total_bytes);
+        if (!raw) return NTEL_FW_ERR_LOAD_FAILED;
+
+        uint32_t write_at = 0;
+        for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
+            const uint8_t *ph_ptr = data + ehdr.e_phoff + ((uint32_t)i * ehdr.e_phentsize);
+            Elf32_Phdr phdr;
+            memcpy(&phdr, ph_ptr, sizeof(phdr));
+            if (phdr.p_type != NTEL_ELF_PT_LOAD || phdr.p_filesz == 0) continue;
+            memcpy(raw + write_at, data + phdr.p_offset, phdr.p_filesz);
+            write_at += phdr.p_filesz;
+        }
+
+        blob->data = raw;
+        blob->size = (uint32_t)total_bytes;
+        blob->loaded = true;
+        return NTEL_FW_SUCCESS;
+    }
+
+    return NTEL_FW_ERR_INVALID_SIGNATURE;
+}
+
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
+#include <IOKit/pci/IOPCIDevice.h>
 
 static NtelFirmwareResult ntel_fw_read_vnode(const char *path, NtelFirmwareBlob *blob) {
     vnode_t vp = NULL;
@@ -113,24 +287,34 @@ static NtelFirmwareResult ntel_fw_read_file(const char *path, NtelFirmwareBlob *
         return NTEL_FW_ERR_TOO_LARGE;
     }
 
-    blob->size = (uint32_t)fsize;
-    blob->data = (uint8_t *)malloc(blob->size);
-    if (!blob->data) {
+    uint32_t file_size = (uint32_t)fsize;
+    uint8_t *file_data = (uint8_t *)malloc(file_size);
+    if (!file_data) {
         fclose(fp);
         return NTEL_FW_ERR_LOAD_FAILED;
     }
 
-    size_t read_bytes = fread(blob->data, 1, blob->size, fp);
+    size_t read_bytes = fread(file_data, 1, file_size, fp);
     fclose(fp);
 
-    if (read_bytes != blob->size) {
-        free(blob->data);
-        blob->data = NULL;
-        blob->size = 0;
-        blob->loaded = false;
+    if (read_bytes != file_size) {
+        free(file_data);
         return NTEL_FW_ERR_VNODE_READ;
     }
 
+    if (ntel_fw_is_elf(file_data, file_size)) {
+        NtelFirmwareResult elf_res = ntel_fw_extract_elf_load_segments(file_data, file_size, blob);
+        free(file_data);
+        if (elf_res == NTEL_FW_SUCCESS) {
+            printf("[FW] ELF firmware image detected and raw segments extracted (%u bytes)\n", blob->size);
+            return NTEL_FW_SUCCESS;
+        }
+        printf("[FW] ELF firmware image detected but extraction failed (%d)\n", elf_res);
+        return elf_res;
+    }
+
+    blob->size = file_size;
+    blob->data = file_data;
     blob->loaded = true;
     return NTEL_FW_SUCCESS;
 }
@@ -162,6 +346,18 @@ NtelFirmwareResult ntel_fw_inject_all(NtelFirmwareContext *ctx) {
     ctx->guc_loaded = true;
     ctx->huc_loaded = true;
 
+    /* Phase 2: In usermode simulation, map a fake MMIO window and perform
+       the firmware upload sequence into the emulated MMIO space. */
+    if (ntel_fw_map_mmio(ctx, NULL) == NTEL_FW_SUCCESS) {
+        NtelFirmwareResult guc_upload = ntel_fw_upload_guc_to_hw(ctx);
+        NtelFirmwareResult huc_upload = ntel_fw_upload_huc_to_hw(ctx);
+        if (guc_upload != NTEL_FW_SUCCESS || huc_upload != NTEL_FW_SUCCESS) {
+            printf("[FW] Firmware upload failed: GuC=%d HuC=%d\n", guc_upload, huc_upload);
+            ntel_fw_cleanup(ctx);
+            return NTEL_FW_ERR_HARDWARE_REJECT;
+        }
+    }
+
     printf("[FW] All firmware loaded successfully\n");
     return NTEL_FW_SUCCESS;
 }
@@ -177,7 +373,7 @@ NtelFirmwareResult ntel_fw_load_blob(NtelFirmwareContext *ctx, NtelFirmwareType 
         return NTEL_FW_SUCCESS;
     }
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
     NtelFirmwareResult res = ntel_fw_read_vnode(path, blob);
 #else
     NtelFirmwareResult res = ntel_fw_read_file(path, blob);
@@ -201,7 +397,7 @@ void ntel_fw_cleanup(NtelFirmwareContext *ctx) {
     if (!ctx) return;
 
     if (ctx->guc_blob.data) {
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
         IOFreeContiguous(ctx->guc_blob.data, ctx->guc_blob.size);
 #else
         free(ctx->guc_blob.data);
@@ -212,7 +408,7 @@ void ntel_fw_cleanup(NtelFirmwareContext *ctx) {
     }
 
     if (ctx->huc_blob.data) {
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
         IOFreeContiguous(ctx->huc_blob.data, ctx->huc_blob.size);
 #else
         free(ctx->huc_blob.data);
@@ -222,13 +418,18 @@ void ntel_fw_cleanup(NtelFirmwareContext *ctx) {
         ctx->huc_blob.loaded = false;
     }
 
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
+    if (ctx->mmio_map) {
+        ((IOMemoryMap *)ctx->mmio_map)->release();
+        ctx->mmio_map = NULL;
+    }
+#endif
+
     if (ctx->mmio_base) {
-#ifdef __APPLE__
-        if (ctx->mmio_size > 0) {
-            IOFreeContiguous(ctx->mmio_base, ctx->mmio_size);
-        }
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
+        // mmio_base is managed by mmio_map and should not be freed directly.
 #else
-        // Usermode simulation - no-op
+        free(ctx->mmio_base);
 #endif
         ctx->mmio_base = NULL;
         ctx->mmio_size = 0;
@@ -238,21 +439,31 @@ void ntel_fw_cleanup(NtelFirmwareContext *ctx) {
     ctx->huc_loaded = false;
 }
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
 NtelFirmwareResult ntel_fw_map_mmio(NtelFirmwareContext *ctx, IOPCIDevice *pci_device) {
     if (!ctx || !pci_device) return NTEL_FW_ERR_NOT_FOUND;
-    
-    // Map the GPU's MMIO registers
-    // Intel VGA/MMIO base offset varies by device - typically 0x4000+
-    ctx->mmio_size = 0x10000; // 64KB MMIO space
-    ctx->mmio_base = IOMallocContiguous(ctx->mmio_size, 4096, NULL);
-    if (!ctx->mmio_base) {
-        printf("[FW] Failed to allocate MMIO mapping space\n");
+    if (ctx->mmio_map) return NTEL_FW_SUCCESS;
+
+    const UInt8 bar_register = 0x10; // PCI BAR0
+    IOMemoryMap *map = pci_device->mapDeviceMemoryWithRegister(bar_register, 0);
+    if (!map) {
+        printf("[FW] Failed to map PCI device MMIO BAR0\n");
         return NTEL_FW_ERR_LOAD_FAILED;
     }
-    
-    // Map physical registers - in real implementation would use IOPCIDevice::mapMemory
-    // This is a placeholder for the MMIO mapping logic
+
+    ctx->mmio_map = map;
+    ctx->mmio_base = (void *)(uintptr_t)map->GetAddress();
+    ctx->mmio_size = (uint32_t)map->GetLength();
+    if (ctx->mmio_size == 0 || ctx->mmio_base == NULL) {
+        printf("[FW] MMIO mapping returned invalid address/size\n");
+        map->release();
+        ctx->mmio_map = NULL;
+        ctx->mmio_base = NULL;
+        ctx->mmio_size = 0;
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+
+    printf("[FW] Mapped MMIO BAR0 @ %p len=%u\n", ctx->mmio_base, ctx->mmio_size);
     return NTEL_FW_SUCCESS;
 }
 
@@ -261,6 +472,12 @@ NtelFirmwareResult ntel_fw_upload_guc_to_hw(NtelFirmwareContext *ctx) {
         return NTEL_FW_ERR_LOAD_FAILED;
     }
     
+    if (ntel_fw_check_mmio_space(ctx, INTEL_GUC_STATUS_REG_OFFSET, 4) != NTEL_FW_SUCCESS ||
+        ntel_fw_check_mmio_space(ctx, INTEL_GUC_LOAD_REG_OFFSET, ctx->guc_blob.size) != NTEL_FW_SUCCESS ||
+        ntel_fw_check_mmio_space(ctx, INTEL_Doorbell_REG_OFFSET, 4) != NTEL_FW_SUCCESS) {
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+
     uint8_t *mmio = (uint8_t *)ctx->mmio_base;
     uint8_t *guc_data = ctx->guc_blob.data;
     uint32_t guc_size = ctx->guc_blob.size;
@@ -270,8 +487,14 @@ NtelFirmwareResult ntel_fw_upload_guc_to_hw(NtelFirmwareContext *ctx) {
     
     // Step 2: Write GuC blob to loader register in chunks
     uint32_t *load_reg = (uint32_t *)(mmio + INTEL_GUC_LOAD_REG_OFFSET);
-    for (uint32_t i = 0; i < guc_size; i += 4) {
-        *load_reg = *(uint32_t *)(guc_data + i);
+    uint32_t full_words = guc_size / 4;
+    uint32_t tail_bytes = guc_size % 4;
+    for (uint32_t i = 0; i < full_words; i++) {
+        load_reg[i] = *(uint32_t *)(guc_data + i * 4);
+    }
+    if (tail_bytes) {
+        uint8_t *tail_ptr = (uint8_t *)(load_reg + full_words);
+        memcpy(tail_ptr, guc_data + full_words * 4, tail_bytes);
     }
     
     // Step 3: Trigger upload and wait for completion
@@ -294,6 +517,12 @@ NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx) {
         return NTEL_FW_ERR_LOAD_FAILED;
     }
     
+    if (ntel_fw_check_mmio_space(ctx, INTEL_HUC_STATUS_REG_OFFSET, 4) != NTEL_FW_SUCCESS ||
+        ntel_fw_check_mmio_space(ctx, INTEL_GUC_LOAD_REG_OFFSET + 0x1000, ctx->huc_blob.size) != NTEL_FW_SUCCESS ||
+        ntel_fw_check_mmio_space(ctx, INTEL_Doorbell_REG_OFFSET, 4) != NTEL_FW_SUCCESS) {
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+
     uint8_t *mmio = (uint8_t *)ctx->mmio_base;
     uint8_t *huc_data = ctx->huc_blob.data;
     uint32_t huc_size = ctx->huc_blob.size;
@@ -303,8 +532,14 @@ NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx) {
     
     // Step 2: Write HuC blob to loader register in chunks
     uint32_t *load_reg = (uint32_t *)(mmio + INTEL_GUC_LOAD_REG_OFFSET + 0x1000);
-    for (uint32_t i = 0; i < huc_size; i += 4) {
-        *load_reg = *(uint32_t *)(huc_data + i);
+    uint32_t full_words = huc_size / 4;
+    uint32_t tail_bytes = huc_size % 4;
+    for (uint32_t i = 0; i < full_words; i++) {
+        load_reg[i] = *(uint32_t *)(huc_data + i * 4);
+    }
+    if (tail_bytes) {
+        uint8_t *tail_ptr = (uint8_t *)(load_reg + full_words);
+        memcpy(tail_ptr, huc_data + full_words * 4, tail_bytes);
     }
     
     // Step 3: Trigger upload and wait for completion
@@ -325,20 +560,58 @@ NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx) {
 // Usermode stubs for simulation
 NtelFirmwareResult ntel_fw_map_mmio(NtelFirmwareContext *ctx, void *unused) {
     (void)unused;
-    ctx->mmio_base = NULL;
-    ctx->mmio_size = 0;
+    if (!ctx) return NTEL_FW_ERR_LOAD_FAILED;
+    if (ctx->mmio_base) return NTEL_FW_SUCCESS;
+
+    ctx->mmio_size = 0x10000;
+    ctx->mmio_base = malloc(ctx->mmio_size);
+    if (!ctx->mmio_base) {
+        ctx->mmio_size = 0;
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+    memset(ctx->mmio_base, 0, ctx->mmio_size);
+    return NTEL_FW_SUCCESS;
+}
+
+static NtelFirmwareResult ntel_fw_check_mmio_space(NtelFirmwareContext *ctx, uint32_t offset, uint32_t len) {
+    if (!ctx || !ctx->mmio_base) return NTEL_FW_ERR_LOAD_FAILED;
+    if (offset + len > ctx->mmio_size) return NTEL_FW_ERR_LOAD_FAILED;
     return NTEL_FW_SUCCESS;
 }
 
 NtelFirmwareResult ntel_fw_upload_guc_to_hw(NtelFirmwareContext *ctx) {
-    (void)ctx;
-    printf("[FW] GuC MMIO upload (usermode stub - no hardware access)\n");
+    if (!ctx || !ctx->mmio_base || !ctx->guc_blob.loaded) {
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+
+    const uint32_t load_offset = INTEL_GUC_LOAD_REG_OFFSET;
+    const uint32_t status_offset = INTEL_GUC_STATUS_REG_OFFSET;
+    if (ntel_fw_check_mmio_space(ctx, load_offset, ctx->guc_blob.size) != NTEL_FW_SUCCESS ||
+        ntel_fw_check_mmio_space(ctx, status_offset, 4) != NTEL_FW_SUCCESS) {
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+
+    memcpy((uint8_t *)ctx->mmio_base + load_offset, ctx->guc_blob.data, ctx->guc_blob.size);
+    *(uint32_t *)((uint8_t *)ctx->mmio_base + status_offset) = 0x1;
+    printf("[FW] GuC upload simulated (%u bytes)\n", ctx->guc_blob.size);
     return NTEL_FW_SUCCESS;
 }
 
 NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx) {
-    (void)ctx;
-    printf("[FW] HuC MMIO upload (usermode stub - no hardware access)\n");
+    if (!ctx || !ctx->mmio_base || !ctx->huc_blob.loaded) {
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+
+    const uint32_t load_offset = INTEL_GUC_LOAD_REG_OFFSET + 0x1000;
+    const uint32_t status_offset = INTEL_HUC_STATUS_REG_OFFSET;
+    if (ntel_fw_check_mmio_space(ctx, load_offset, ctx->huc_blob.size) != NTEL_FW_SUCCESS ||
+        ntel_fw_check_mmio_space(ctx, status_offset, 4) != NTEL_FW_SUCCESS) {
+        return NTEL_FW_ERR_LOAD_FAILED;
+    }
+
+    memcpy((uint8_t *)ctx->mmio_base + load_offset, ctx->huc_blob.data, ctx->huc_blob.size);
+    *(uint32_t *)((uint8_t *)ctx->mmio_base + status_offset) = 0x1;
+    printf("[FW] HuC upload simulated (%u bytes)\n", ctx->huc_blob.size);
     return NTEL_FW_SUCCESS;
 }
 #endif

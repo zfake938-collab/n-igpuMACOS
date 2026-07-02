@@ -39,6 +39,9 @@ typedef struct {
     // MMIO registers for hardware upload
     void *mmio_base;
     uint32_t mmio_size;
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
+    void *mmio_map;   // IOMemoryMap * in kernel build
+#endif
 } NtelFirmwareContext;
 
 // MMIO register offsets for Intel GuC/HuC (common values for Xe-LP)
@@ -53,17 +56,15 @@ NtelFirmwareResult ntel_fw_load_blob(NtelFirmwareContext *ctx, NtelFirmwareType 
 bool ntel_fw_verify_status(NtelFirmwareContext *ctx);
 void ntel_fw_cleanup(NtelFirmwareContext *ctx);
 
-// Phase 2: Hardware MMIO upload functions (macOS only)
-#ifdef __APPLE__
+// Phase 2: Hardware MMIO upload functions (macOS kernel build only)
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
 #include <IOKit/pci/IOPCIDevice.h>
 NtelFirmwareResult ntel_fw_map_mmio(NtelFirmwareContext *ctx, IOPCIDevice *pci_device);
-NtelFirmwareResult ntel_fw_upload_guc_to_hw(NtelFirmwareContext *ctx);
-NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx);
 #else
 // Usermode stubs - declarations only
 NtelFirmwareResult ntel_fw_map_mmio(NtelFirmwareContext *ctx, void *unused);
+#endif
 NtelFirmwareResult ntel_fw_upload_guc_to_hw(NtelFirmwareContext *ctx);
 NtelFirmwareResult ntel_fw_upload_huc_to_hw(NtelFirmwareContext *ctx);
-#endif
 
 #endif // NTEL_FIRMWARE_INJECTOR_H

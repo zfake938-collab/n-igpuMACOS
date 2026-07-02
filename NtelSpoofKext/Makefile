@@ -4,7 +4,7 @@ CC = clang
 # Example: make DEBUG=2 simulation
 # Default is 0 (no debug logging) to match production/release behaviour.
 DEBUG   ?= 0
-CFLAGS   = -Wall -Wextra -std=c11 -I./include -pthread -DNTEL_DEBUG=$(DEBUG)
+CFLAGS   = -Wall -Wextra -std=c11 -I./include -pthread -DNTEL_DEBUG=$(DEBUG) -DNTEL_USERMODE
 LDFLAGS  = -pthread
 
 SRC_DIR = src

@@ -3,8 +3,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
 #define NTEL_CACHE_LOCK(e)   do { if ((e)->cache_lock) IOLockLock((IOLock*)(e)->cache_lock); } while(0)
@@ -12,7 +13,6 @@
 #define NTEL_ALLOC(s)        IOMalloc(s)
 #define NTEL_FREE(p, s)      IOFree((p), (s))
 #else
-#include <unistd.h>
 #define NTEL_CACHE_LOCK(e)   pthread_mutex_lock(&(e)->cache_lock)
 #define NTEL_CACHE_UNLOCK(e) pthread_mutex_unlock(&(e)->cache_lock)
 #define NTEL_ALLOC(s)        malloc(s)
@@ -93,13 +93,13 @@ bool ntel_engine_init(NtelTranslationEngine *engine, NtelRingContext *ring) {
 
     memset(engine->shader_cache, 0, sizeof(engine->shader_cache));
 
-#ifndef __APPLE__
-    if (pthread_mutex_init(&engine->cache_lock, NULL) != 0) {
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
+    engine->cache_lock = (void *)IOLockAlloc();
+    if (!engine->cache_lock) {
         return false;
     }
 #else
-    engine->cache_lock = (void *)IOLockAlloc();
-    if (!engine->cache_lock) {
+    if (pthread_mutex_init(&engine->cache_lock, NULL) != 0) {
         return false;
     }
 #endif
@@ -388,28 +388,32 @@ static NtelGen12Instruction translate_send(const uint8_t *payload, uint32_t *off
 static NtelGen12Instruction translate_unknown(const uint8_t *payload, uint32_t *offset) {
     NtelGen12Instruction inst = {0};
     
-    if (offset) {
-        // Log unknown AIR opcode for debugging (bounded hex dump)
+    if (offset && payload) {
+        /* Log unknown AIR opcode for debugging, but avoid unlimited spam. */
         static uint32_t unknown_count = 0;
-        if (unknown_count < 1000 && payload) {  // Rate limit to prevent log spam
-            char hex_buf[96] = {0};
-            for (int i = 0; i < 16 && payload[*offset + i]; i++) {
-                snprintf(hex_buf + (i * 2), 3, "%02X", payload[*offset + i]);
-            }
+        if (unknown_count < 1000) {
+            uint8_t op = payload[*offset];
             NTEL_LOG_SPARSE(NTEL_COMP_ENGINE, NTEL_EVT_TRANSLATION_FAILED,
-                           0, *offset, 0, unknown_count, (int32_t)payload[0]);
+                           0, *offset, 0, unknown_count, (int32_t)op);
             unknown_count++;
         }
         (*offset)++;
     }
-    
-    // Emit NOP-like instruction (safe fallback)
-    inst.dword0 = 0x00;
-    inst.dword1 = 0x00;
-    inst.dword2 = 0x00;
-    inst.dword3 = 0x00;
-    
+
+    /* Emit a safe no-op instruction so the pipeline remains aligned. */
+    inst.dword0 = 0x00000000;
     return inst;
+}
+
+static void ntel_build_idd_header(NtelIDD *idd) {
+    if (!idd) return;
+    idd->kernel_gpu_va = 0x0000000000100000ULL;
+    idd->binding_table_ptr = 0x00002000;
+    idd->sampler_ptr = 0x00003000;
+    idd->slm_config = 0x00001000;
+    idd->eu_thread_count = 32;
+    idd->reserved = 0;
+    idd->padding = 0;
 }
 
 static bool translate_air_to_gen12(const uint8_t *air_packet, uint32_t air_len,
@@ -417,49 +421,43 @@ static bool translate_air_to_gen12(const uint8_t *air_packet, uint32_t air_len,
     if (!air_packet || air_len == 0 || !out_gen12 || !out_gen12_len) return false;
     if (air_len > (NTEL_MAX_SHADER_BYTECODE / 4)) return false;  // Max ~16K instructions
 
-    // Reserve space for descriptor header (32 bytes) + bytecode (16 bytes per instruction)
-    uint32_t gen12_size = 32 + (air_len * 16);
+    uint32_t max_instructions = air_len;
+    uint32_t gen12_size = 32 + (max_instructions * sizeof(NtelGen12Instruction));
     uint8_t *gen12 = (uint8_t *)NTEL_ALLOC(gen12_size);
     if (!gen12) return false;
 
-    // Phase 2: Construct NtelIDD descriptor header
-    NtelIDD *idd = (NtelIDD *)gen12;
-    idd->kernel_gpu_va = 0;
-    idd->binding_table_ptr = 0;
-    idd->sampler_ptr = 0;
-    idd->slm_config = 0;
-    idd->eu_thread_count = 64;
-    idd->reserved = 0;
-    idd->padding = 0;
+    memset(gen12, 0, gen12_size);
+    ntel_build_idd_header((NtelIDD *)gen12);
 
-    // Phase 2: LUT-based opcode transmutation using function pointers
     uint32_t offset = 0;
-    NtelGen12Instruction inst;
     uint32_t inst_count = 0;
-    
-    // Use the static LUT - in real implementation this would be passed via engine
+    NtelGen12Instruction inst;
+
     static NtelOpcodeMap local_lut[256];
     static bool lut_initialized = false;
     if (!lut_initialized) {
         ntel_init_opcode_lut(local_lut);
         lut_initialized = true;
     }
-    
-    while (offset < air_len && inst_count < air_len) {
+
+    while (offset < air_len && inst_count < max_instructions) {
         uint8_t air_op = air_packet[offset];
-        if (local_lut[air_op].translate_fn) {
-            inst = local_lut[air_op].translate_fn(air_packet, &offset);
-            memcpy(gen12 + 32 + (inst_count * 16), &inst, sizeof(NtelGen12Instruction));
-            inst_count++;
+        const NtelOpcodeMap *entry = &local_lut[air_op];
+        uint32_t next_offset = offset + entry->payload_size;
+
+        if (entry->translate_fn && next_offset <= air_len) {
+            inst = entry->translate_fn(air_packet, &offset);
         } else {
-            // Unknown opcode - skip
-            offset++;
-            inst_count++;
+            inst = translate_unknown(air_packet, &offset);
         }
+
+        memcpy(gen12 + 32 + (inst_count * sizeof(NtelGen12Instruction)), &inst,
+               sizeof(NtelGen12Instruction));
+        inst_count++;
     }
 
     *out_gen12 = gen12;
-    *out_gen12_len = 32 + (inst_count * 16);
+    *out_gen12_len = 32 + (inst_count * sizeof(NtelGen12Instruction));
     return true;
 }
 
@@ -528,12 +526,9 @@ bool ntel_engine_process_command(NtelTranslationEngine *engine, const uint8_t *a
         return false;
     }
 
-    uint32_t current_pid = 0;
+    uint32_t current_pid = (uint32_t)getpid();
 #ifdef __APPLE__
-    /* TODO: Use proc_selfpid() or similar to get actual PID in kernel context */
-    current_pid = 1234;  /* STUB: Hardcoded placeholder for Phase 2 */
-#else
-    current_pid = (uint32_t)getpid();
+    /* macOS usermode uses getpid(); kernel build should use proc_selfpid(). */
 #endif
 
     if (engine->active_pid != 0 && engine->active_pid != current_pid) {
@@ -576,10 +571,10 @@ bool ntel_engine_process_command(NtelTranslationEngine *engine, const uint8_t *a
 void ntel_engine_cleanup(NtelTranslationEngine *engine) {
     if (engine) {
         ntel_shader_cache_flush(engine);
-#ifndef __APPLE__
-        pthread_mutex_destroy(&engine->cache_lock);
-#else
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
         if (engine->cache_lock) IOLockFree((IOLock *)engine->cache_lock);
+#else
+        pthread_mutex_destroy(&engine->cache_lock);
 #endif
         engine->ring = NULL;
     }

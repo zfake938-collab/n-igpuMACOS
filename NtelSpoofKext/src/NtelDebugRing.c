@@ -11,13 +11,13 @@ static uint64_t ntel_debug_now_ns_impl(void) {
     static int s_init = 0;
     if (!s_init) {
         s_timebase.denom = 0;
-        s_timebase.num = 0;
+        s_timebase.numer = 0;
         (void)mach_timebase_info(&s_timebase);
         s_init = 1;
     }
     uint64_t t = mach_absolute_time();
     if (s_timebase.denom == 0) return 0;
-    return (t * s_timebase.num) / s_timebase.denom;
+    return (t * s_timebase.numer) / s_timebase.denom;
 }
 #else
 #include <time.h>

@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdatomic.h>
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
 #include <libkern/OSAtomic.h>
 #include <IOKit/IOLocks.h>
 #define NTEL_BARRIER_FULL()    OSMemoryBarrier()
@@ -53,7 +53,7 @@ bool ntel_ring_init(NtelRingContext *ctx, void *shared_mem, uint32_t size) {
         return false;
     }
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
     ctx->lock = IOLockAlloc();
     if (!ctx->lock) return false;
 #else
@@ -191,7 +191,7 @@ out:
 
 void ntel_ring_cleanup(NtelRingContext *ctx) {
     if (ctx) {
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
         if (ctx->lock) {
             IOLockFree((IOLock *)ctx->lock);
         }

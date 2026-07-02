@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#ifndef __APPLE__
+#if !defined(__APPLE__) || defined(NTEL_USERMODE)
 #include <pthread.h>
 #endif
 #include "NtelSharedRing.h"
@@ -72,7 +72,7 @@ typedef struct {
     uint32_t cache_hits;
     uint32_t cache_misses;
     uint32_t collision_rejects;
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(NTEL_USERMODE)
     void *cache_lock;
 #else
     pthread_mutex_t cache_lock;
